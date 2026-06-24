@@ -453,6 +453,7 @@ function App() {
               onChange={(event) => setStrength(Number(event.target.value))}
               type="range"
             />
+              <small>上传参考图时，结果要多大程度贴近参考图。</small>
           </label>
 
           <label className="field">
