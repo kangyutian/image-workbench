@@ -57,6 +57,13 @@ const modeLabels: Record<GenerationMode, string> = {
   "multi-image-fusion": "多图融合",
 };
 
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return createId();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function resolveMode(imageCount: number): GenerationMode {
   if (imageCount === 0) return "text-to-image";
   if (imageCount === 1) return "image-to-image";
@@ -187,7 +194,7 @@ function App() {
             const reader = new FileReader();
             reader.onload = () =>
               resolve({
-                id: crypto.randomUUID(),
+                id: createId(),
                 fileName: file.name,
                 dataUrl: String(reader.result),
                 mimeType: file.type,
@@ -236,7 +243,7 @@ function App() {
       setResults(generated);
       setHistory((current) => [
         {
-          id: crypto.randomUUID(),
+          id: createId(),
           provider,
           mode,
           prompt,
@@ -266,7 +273,7 @@ function App() {
   function useAsInput(image: GeneratedImage) {
     setImages([
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         fileName: "generated-input.png",
         dataUrl: image.url,
         mimeType: "image/png",

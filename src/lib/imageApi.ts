@@ -38,6 +38,13 @@ const imageSizeByQuality = {
   "4k": "4K",
 } as const;
 
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function cleanApiKey(rawKey: string) {
   const keyMatch = rawKey.match(/sk-[A-Za-z0-9._-]+/);
   const cleaned = (keyMatch?.[0] ?? rawKey)
@@ -121,7 +128,7 @@ function parseImages(payload: unknown): GeneratedImage[] {
     const mimeType = geminiImage.mime_type ?? geminiImage.mimeType ?? "image/png";
     return [
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         url: `data:${mimeType};base64,${geminiImage.data}`,
         source: "base64",
       },
@@ -134,7 +141,7 @@ function parseImages(payload: unknown): GeneratedImage[] {
       .filter((part): part is { data?: string; mimeType?: string; mime_type?: string } => Boolean(part?.data)) ?? [];
   if (inlineImages.length > 0) {
     return inlineImages.map((image) => ({
-      id: crypto.randomUUID(),
+      id: createId(),
       url: `data:${image.mimeType ?? image.mime_type ?? "image/png"};base64,${image.data}`,
       source: "base64",
     }));
@@ -143,17 +150,17 @@ function parseImages(payload: unknown): GeneratedImage[] {
   return candidates
     .map((item, index) => {
       if (item.url) {
-        return { id: crypto.randomUUID(), url: item.url, source: "url" as const };
+        return { id: createId(), url: item.url, source: "url" as const };
       }
       if (item.b64_json) {
         return {
-          id: crypto.randomUUID(),
+          id: createId(),
           url: `data:image/png;base64,${item.b64_json}`,
           source: "base64" as const,
         };
       }
       return {
-        id: crypto.randomUUID(),
+        id: createId(),
         url: createMockSvg(`Result ${index + 1}`, "No image field returned"),
         source: "mock" as const,
       };
@@ -170,7 +177,7 @@ export async function generateImage(request: GenerateRequest): Promise<Generated
   if (request.baseUrl.trim().toLowerCase() === "mock") {
     await new Promise((resolve) => window.setTimeout(resolve, 700));
     return Array.from({ length: outputCount }, (_, index) => ({
-      id: crypto.randomUUID(),
+      id: createId(),
       url: createMockSvg(`${request.provider} ${index + 1}`, request.prompt),
       source: "mock" as const,
     }));
