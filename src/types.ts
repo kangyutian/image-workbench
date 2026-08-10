@@ -1,33 +1,38 @@
-export type ProviderId = "nanobanana" | "image2";
+export type ProviderId = "nanobanana" | "image2" | "grok";
+
+export type NanoModelId =
+  | "nano-banana-2-fast"
+  | "nano-banana-2"
+  | "nano-banana-pro"
+  | "nano-banana-pro-edit-multi"
+  | "grok-2-image"
+  | "grok-imagine-image-edit"
+  | "grok-imagine-image-quality";
 
 export type GenerationMode = "text-to-image" | "image-to-image" | "multi-image-fusion";
 
-export type Quality = "standard" | "hd" | "2k" | "4k";
+export type Quality = "low" | "medium" | "high";
 
-export interface ProviderConfig {
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-}
+export type Resolution = "1k" | "2k" | "4k";
 
 export interface UploadedImage {
   id: string;
   fileName: string;
   dataUrl: string;
   mimeType: string;
+  size?: number;
 }
+
+export type TaskPreset = "print-extraction";
 
 export interface GenerateRequest {
   provider: ProviderId;
-  apiKey: string;
-  baseUrl: string;
-  model: string;
+  nanoModel: NanoModelId;
   prompt: string;
-  negativePrompt?: string;
   images: UploadedImage[];
   aspectRatio: string;
   count: number;
-  strength: number;
+  resolution: Resolution;
   quality: Quality;
 }
 
