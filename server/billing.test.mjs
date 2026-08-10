@@ -59,3 +59,10 @@ test("uses the approved retry schedule and never exposes the billing key in erro
     (error) => error instanceof Error && error.message === "WaveSpeed billing search failed with HTTP 401" && !error.message.includes("fake-secret-key"),
   );
 });
+
+test("treats an invalid successful billing response as a query failure", async () => {
+  await assert.rejects(
+    () => searchBillingRecords({ apiKey: "fake-billing-key", predictionIds: ["prediction-1"], fetchImpl: async () => new Response("not-json", { status: 200 }), baseUrl: "https://billing.example/api/v3" }),
+    (error) => error instanceof Error && error.message === "WaveSpeed billing search returned an invalid response.",
+  );
+});

@@ -1,5 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { legacyAccountId } from "./accountIdentity.mjs";
+import { billingRetryDelayMs } from "./billing.mjs";
+
+const MAX_NO_CHARGE_ATTEMPTS = 7;
+const TERMINAL_PREDICTION_STATUSES = new Set(["charged", "no_charge"]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -29,6 +34,132 @@ function defaultBillingSync(predictionIds) {
   };
 }
 
+function validPredictionStatus(status) {
+  return ["pending", "charged", "no_charge", "failed"].includes(status) ? status : "pending";
+}
+
+function normalizeSettlement(value, fallbackStatus = "pending") {
+  const status = validPredictionStatus(value?.status || fallbackStatus);
+  return {
+    status,
+    attempts: Math.max(0, Number(value?.attempts) || 0),
+    lastAttemptAt: value?.lastAttemptAt || null,
+    nextAttemptAt: value?.nextAttemptAt || null,
+    error: value?.error || null,
+  };
+}
+
+function isSettled(settlement) {
+  return TERMINAL_PREDICTION_STATUSES.has(settlement?.status);
+}
+
+function aggregateStatus(predictionIds, settlements) {
+  if (!predictionIds.length) return "complete";
+  const values = predictionIds.map((id) => settlements[id]).filter(Boolean);
+  if (values.some((settlement) => settlement.status === "failed")) return "failed";
+  return values.length === predictionIds.length && values.every(isSettled) ? "complete" : "pending";
+}
+
+function safeBillingRecord(record) {
+  const uuid = String(record?.uuid || "").trim();
+  const predictionId = String(record?.predictionId || "").trim();
+  if (!uuid || !predictionId || !Number.isFinite(Number(record?.price))) return null;
+  return {
+    uuid,
+    predictionId,
+    price: roundMoney(record.price),
+    createdAt: record.createdAt || null,
+  };
+}
+
+function normalizeState(parsed, startAt) {
+  const state = {
+    version: 2,
+    trackingStartedAt: parsed?.trackingStartedAt || startAt,
+    lastSyncedAt: parsed?.lastSyncedAt || null,
+    billingRecordUuids: {},
+    entries: [],
+  };
+  let changed = parsed?.version !== 2 || !parsed?.billingRecordUuids;
+
+  for (const raw of Array.isArray(parsed?.entries) ? parsed.entries : []) {
+    const taskId = String(raw?.taskId || "").trim();
+    const owner = String(raw?.owner || "").trim();
+    if (!taskId || !owner) {
+      changed = true;
+      continue;
+    }
+    const predictionIds = predictionIdsFor(raw);
+    const billingRecords = [];
+    for (const candidate of Array.isArray(raw.billingRecords) ? raw.billingRecords : []) {
+      const record = safeBillingRecord(candidate);
+      if (!record || !predictionIds.includes(record.predictionId)) {
+        changed = true;
+        continue;
+      }
+      if (state.billingRecordUuids[record.uuid]) {
+        changed = true;
+        continue;
+      }
+      state.billingRecordUuids[record.uuid] = taskId;
+      billingRecords.push(record);
+    }
+
+    const oldSync = raw.billingSync && typeof raw.billingSync === "object" ? raw.billingSync : {};
+    const billingSync = { ...defaultBillingSync(predictionIds), ...oldSync };
+    const predictionSettlements = {};
+    for (const predictionId of predictionIds) {
+      const matching = billingRecords.find((record) => record.predictionId === predictionId);
+      const fallbackStatus = matching
+        ? "charged"
+        : billingSync.status === "failed" || billingSync.error
+          ? "failed"
+          : billingSync.status === "complete"
+            ? "no_charge"
+            : "pending";
+      predictionSettlements[predictionId] = normalizeSettlement(raw.predictionSettlements?.[predictionId], fallbackStatus);
+      if (matching) predictionSettlements[predictionId].status = "charged";
+    }
+    const status = aggregateStatus(predictionIds, predictionSettlements);
+    if (billingSync.status !== status) changed = true;
+    state.entries.push({
+      taskId,
+      accountId: raw.accountId ? String(raw.accountId) : null,
+      owner,
+      kind: raw.kind === "video" ? "video" : "image",
+      provider: raw.provider || null,
+      modelId: String(raw.modelId || "unknown"),
+      createdAt: iso(raw.createdAt),
+      status: String(raw.status || "queued"),
+      resultCount: Math.max(0, Number(raw.resultCount) || 0),
+      predictionIds,
+      predictionSettlements,
+      billingRecords,
+      amountUsd: roundMoney(billingRecords.reduce((sum, record) => sum + record.price, 0)),
+      billingSync: { ...billingSync, status },
+    });
+  }
+
+  return { state, changed };
+}
+
+function settlementsForIds(ids, existing = {}, billingSync = {}, billingRecords = []) {
+  const settlements = {};
+  for (const predictionId of ids) {
+    const matching = billingRecords.find((record) => record.predictionId === predictionId);
+    const fallbackStatus = matching
+      ? "charged"
+      : billingSync.status === "failed" || billingSync.error
+        ? "failed"
+        : billingSync.status === "complete"
+          ? "no_charge"
+          : "pending";
+    settlements[predictionId] = normalizeSettlement(existing[predictionId], fallbackStatus);
+    if (matching) settlements[predictionId].status = "charged";
+  }
+  return settlements;
+}
+
 export class UsageLedger {
   constructor({ file, startAt, now = () => new Date() }) {
     this.file = file;
@@ -41,12 +172,17 @@ export class UsageLedger {
     if (existsSync(this.file)) {
       try {
         const parsed = JSON.parse(readFileSync(this.file, "utf8"));
-        if (parsed?.version === 1 && Array.isArray(parsed.entries) && parsed.trackingStartedAt) return parsed;
+        if (Array.isArray(parsed?.entries) && parsed.trackingStartedAt) {
+          const normalized = normalizeState(parsed, this.startAt);
+          this.state = normalized.state;
+          if (normalized.changed) this.write();
+          return this.state;
+        }
       } catch {
         // Recreate a valid privacy-minimal ledger below.
       }
     }
-    const state = { version: 1, trackingStartedAt: this.startAt, lastSyncedAt: null, entries: [] };
+    const state = { version: 2, trackingStartedAt: this.startAt, lastSyncedAt: null, billingRecordUuids: {}, entries: [] };
     this.state = state;
     this.write();
     return state;
@@ -67,30 +203,33 @@ export class UsageLedger {
     const createdAt = iso(task.createdAt || this.now());
     if (Date.parse(createdAt) < Date.parse(this.state.trackingStartedAt)) return null;
 
-    const ids = predictionIdsFor(task);
-    const input = task.input || {};
     const existing = this.state.entries.find((entry) => entry.taskId === taskId);
-    const previousIds = existing?.predictionIds || [];
-    const receivedNewPrediction = ids.some((id) => !previousIds.includes(id));
+    const ids = [...new Set([...(existing?.predictionIds || []), ...predictionIdsFor(task)])];
+    const billingRecords = Array.isArray(existing?.billingRecords) ? existing.billingRecords.map(safeBillingRecord).filter(Boolean) : [];
     const billingSync = existing?.billingSync ? { ...existing.billingSync } : defaultBillingSync(ids);
-    if (receivedNewPrediction && billingSync.status === "complete" && ids.length > 0) {
+    const predictionSettlements = settlementsForIds(ids, existing?.predictionSettlements, billingSync, billingRecords);
+    const addedPrediction = ids.some((id) => !(existing?.predictionIds || []).includes(id));
+    if (addedPrediction && billingSync.status === "complete") {
       billingSync.status = "pending";
       billingSync.error = null;
       billingSync.nextAttemptAt = null;
     }
+    billingSync.status = aggregateStatus(ids, predictionSettlements);
 
     const next = {
       taskId,
+      accountId: task.accountId ? String(task.accountId) : existing?.accountId || null,
       owner,
       kind: task.kind === "video" ? "video" : "image",
-      provider: input.provider || null,
-      modelId: String(task.kind === "video" ? input.modelId || "unknown" : input.nanoModel || "unknown"),
+      provider: task.input?.provider || existing?.provider || null,
+      modelId: String(task.kind === "video" ? task.input?.modelId || existing?.modelId || "unknown" : task.input?.nanoModel || existing?.modelId || "unknown"),
       createdAt,
       status: String(task.status || "queued"),
-      resultCount: Array.isArray(task.results) ? task.results.length : 0,
+      resultCount: Array.isArray(task.results) ? task.results.length : Number(existing?.resultCount) || 0,
       predictionIds: ids,
-      billingRecords: existing?.billingRecords || [],
-      amountUsd: roundMoney(existing?.amountUsd || 0),
+      predictionSettlements,
+      billingRecords,
+      amountUsd: roundMoney(billingRecords.reduce((sum, record) => sum + record.price, 0)),
       billingSync,
     };
 
@@ -103,20 +242,74 @@ export class UsageLedger {
   applyBillingRecords(taskId, records, sync = {}) {
     const entry = this.state.entries.find((item) => item.taskId === taskId);
     if (!entry) return null;
+    const attempts = Math.max(1, Number(sync.attempts) || (Number(entry.billingSync?.attempts) || 0) + 1);
+    return this.reconcileBilling(taskId, records, {
+      successful: true,
+      attempts,
+      attemptedAt: sync.lastAttemptAt || sync.syncedAt || this.now(),
+      error: null,
+    });
+  }
+
+  addBillingRecords(entry, records) {
     const byUuid = new Map((entry.billingRecords || []).map((record) => [record.uuid, record]));
-    for (const record of Array.isArray(records) ? records : []) {
-      if (!record?.uuid || !entry.predictionIds.includes(record.predictionId)) continue;
-      byUuid.set(String(record.uuid), {
-        uuid: String(record.uuid),
-        predictionId: String(record.predictionId),
-        price: roundMoney(record.price),
-        createdAt: record.createdAt || null,
-      });
+    const acceptedPredictionIds = new Set();
+    for (const candidate of Array.isArray(records) ? records : []) {
+      const record = safeBillingRecord(candidate);
+      if (!record || !entry.predictionIds.includes(record.predictionId)) continue;
+      const owner = this.state.billingRecordUuids[record.uuid];
+      if (owner && owner !== entry.taskId) continue;
+      const existing = byUuid.get(record.uuid);
+      if (existing && existing.predictionId !== record.predictionId) continue;
+      this.state.billingRecordUuids[record.uuid] = entry.taskId;
+      byUuid.set(record.uuid, record);
+      acceptedPredictionIds.add(record.predictionId);
     }
     entry.billingRecords = [...byUuid.values()];
     entry.amountUsd = roundMoney(entry.billingRecords.reduce((sum, record) => sum + record.price, 0));
-    entry.billingSync = { ...entry.billingSync, ...sync };
-    if (sync.syncedAt) this.state.lastSyncedAt = sync.syncedAt;
+    return acceptedPredictionIds;
+  }
+
+  reconcileBilling(taskId, records, { successful = true, attempts, attemptedAt = this.now(), error = null } = {}) {
+    const entry = this.state.entries.find((item) => item.taskId === taskId);
+    if (!entry) return null;
+    const attemptedAtIso = iso(attemptedAt);
+    const attemptNumber = Math.max(1, Number(attempts) || (Number(entry.billingSync?.attempts) || 0) + 1);
+    const acceptedPredictionIds = successful ? this.addBillingRecords(entry, records) : new Set();
+    entry.predictionSettlements = settlementsForIds(entry.predictionIds, entry.predictionSettlements, entry.billingSync, entry.billingRecords);
+
+    for (const predictionId of entry.predictionIds) {
+      const settlement = entry.predictionSettlements[predictionId];
+      if (isSettled(settlement)) continue;
+      const settlementAttempts = Math.max(attemptNumber, (Number(settlement.attempts) || 0) + 1);
+      const charged = acceptedPredictionIds.has(predictionId);
+      const terminal = successful && charged;
+      settlement.status = terminal ? "charged" : successful && settlementAttempts >= MAX_NO_CHARGE_ATTEMPTS ? "no_charge" : successful ? "pending" : "failed";
+      settlement.attempts = settlementAttempts;
+      settlement.lastAttemptAt = attemptedAtIso;
+      settlement.nextAttemptAt = TERMINAL_PREDICTION_STATUSES.has(settlement.status)
+        ? null
+        : new Date(Date.parse(attemptedAtIso) + billingRetryDelayMs(settlementAttempts - 1)).toISOString();
+      settlement.error = successful ? null : "WaveSpeed billing sync is temporarily unavailable.";
+    }
+
+    const status = aggregateStatus(entry.predictionIds, entry.predictionSettlements);
+    const nextAttemptAt = status === "complete"
+      ? null
+      : entry.predictionIds
+        .map((id) => entry.predictionSettlements[id]?.nextAttemptAt)
+        .filter(Boolean)
+        .sort()[0] || null;
+    entry.billingSync = {
+      ...entry.billingSync,
+      status,
+      attempts: attemptNumber,
+      lastAttemptAt: attemptedAtIso,
+      nextAttemptAt,
+      error: status === "failed" ? "WaveSpeed billing sync is temporarily unavailable." : null,
+      syncedAt: attemptedAtIso,
+    };
+    this.state.lastSyncedAt = attemptedAtIso;
     this.write();
     return clone(entry);
   }
@@ -125,17 +318,31 @@ export class UsageLedger {
     const entry = this.state.entries.find((item) => item.taskId === taskId);
     if (!entry) return null;
     entry.billingSync = { ...entry.billingSync, ...changes };
+    if (changes.status === "complete" && aggregateStatus(entry.predictionIds, entry.predictionSettlements) !== "complete") {
+      entry.billingSync.status = aggregateStatus(entry.predictionIds, entry.predictionSettlements);
+    }
     if (changes.syncedAt) this.state.lastSyncedAt = changes.syncedAt;
     this.write();
     return clone(entry);
   }
 
+  migrateAccountIds(resolveAccountId) {
+    let changed = false;
+    for (const entry of this.state.entries) {
+      if (entry.accountId) continue;
+      const resolved = typeof resolveAccountId === "function" ? resolveAccountId(entry.owner) : null;
+      entry.accountId = String(resolved || legacyAccountId(entry.owner));
+      changed = true;
+    }
+    if (changed) this.write();
+    return changed;
+  }
+
   entriesForSync({ now = this.now(), force = false } = {}) {
     const nowMs = new Date(now).getTime();
     return this.state.entries.filter((entry) => {
-      if (!entry.predictionIds?.length) return false;
+      if (!entry.predictionIds?.length || entry.billingSync.status === "complete") return false;
       if (force) return true;
-      if (entry.billingSync.status === "complete") return false;
       const nextAttemptAt = entry.billingSync.nextAttemptAt ? Date.parse(entry.billingSync.nextAttemptAt) : 0;
       return !nextAttemptAt || nextAttemptAt <= nowMs;
     }).map(clone);

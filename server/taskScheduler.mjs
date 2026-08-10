@@ -1,7 +1,11 @@
+function hasPredictionIds(task) {
+  return Boolean(task?.predictionId) || (Array.isArray(task?.predictionIds) && task.predictionIds.length > 0);
+}
+
 export function recoveryAction(task) {
   if (task?.status === "queued") return "enqueue";
-  if (task?.status === "running") return task.predictionId ? "enqueue" : "requeue";
-  if (task?.status === "cancel_requested") return task.predictionId ? "enqueue" : "cancel";
+  if (task?.status === "running") return hasPredictionIds(task) ? "enqueue" : "requeue";
+  if (task?.status === "cancel_requested") return hasPredictionIds(task) ? "enqueue" : "cancel";
   return "ignore";
 }
 

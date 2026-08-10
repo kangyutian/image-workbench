@@ -116,6 +116,8 @@ test("public task responses hide local paths and inline image bytes", () => {
 test("public task responses hide prediction and billing internals", () => {
   const task = publicTask({
     id: "task-private",
+    owner: "alice",
+    accountId: "account-alice",
     predictionId: "prediction-1",
     predictionIds: ["prediction-1", "prediction-2"],
     billingRecords: [{ uuid: "billing-1", price: 0.12 }],
@@ -124,6 +126,8 @@ test("public task responses hide prediction and billing internals", () => {
   assert.equal("predictionId" in task, false);
   assert.equal("predictionIds" in task, false);
   assert.equal("billingRecords" in task, false);
+  assert.equal("owner" in task, false);
+  assert.equal("accountId" in task, false);
 });
 
 test("cleanup removes only the selected task staging directory", () => {

@@ -6,6 +6,7 @@ test("recovers interrupted tasks without leaving pre-prediction work stuck", () 
   assert.equal(recoveryAction({ status: "queued", predictionId: null }), "enqueue");
   assert.equal(recoveryAction({ status: "running", predictionId: null }), "requeue");
   assert.equal(recoveryAction({ status: "running", predictionId: "prediction-1" }), "enqueue");
+  assert.equal(recoveryAction({ status: "running", predictionIds: ["prediction-1", "prediction-2"] }), "enqueue");
   assert.equal(recoveryAction({ status: "cancel_requested", predictionId: null }), "cancel");
   assert.equal(recoveryAction({ status: "done", predictionId: "prediction-1" }), "ignore");
 });

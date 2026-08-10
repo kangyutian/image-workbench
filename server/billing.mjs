@@ -27,7 +27,12 @@ export async function searchBillingRecords({ apiKey, predictionIds, fetchImpl = 
       body: JSON.stringify({ billing_type: "deduct", prediction_uuids: ids, page, page_size: pageSize }),
     });
     if (!response.ok) throw new Error(`WaveSpeed billing search failed with HTTP ${response.status}`);
-    const body = await response.json().catch(() => ({}));
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error("WaveSpeed billing search returned an invalid response.");
+    }
     const data = body?.data || {};
     for (const item of Array.isArray(data.items) ? data.items : []) {
       const record = billingItem(item, wanted);

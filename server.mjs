@@ -3,6 +3,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, stat
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { extname, join, normalize, resolve } from "node:path";
 import { recoveryAction, TaskScheduler } from "./server/taskScheduler.mjs";
+import { accountIdForUsername, ensureAccountIds, migrateTaskAccountId } from "./server/accountIdentity.mjs";
 import {
   claimStagedUploadReferences,
   cleanupStagedImageFiles,
@@ -21,6 +22,7 @@ import { UsageLedger } from "./server/usageLedger.mjs";
 import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
+import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, recoveryPredictionIds } from "./server/predictionResults.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -73,6 +75,7 @@ function usersStore() {
       users: [
         {
           username,
+          accountId: randomBytes(16).toString("hex"),
           passwordHash: hashPassword(password),
           role: "admin",
           createdAt: new Date().toISOString(),
@@ -86,7 +89,10 @@ function usersStore() {
 
   try {
     const parsed = JSON.parse(readFileSync(usersFile, "utf8"));
-    return { users: Array.isArray(parsed?.users) ? parsed.users : [] };
+    const normalized = ensureAccountIds(Array.isArray(parsed?.users) ? parsed.users : [], () => randomBytes(16).toString("hex"));
+    const store = { users: normalized.users };
+    if (normalized.changed) writeUsersStore(store);
+    return store;
   } catch {
     return { users: [] };
   }
@@ -125,7 +131,7 @@ function signSession(payload) {
 function sessionForUser(user) {
   if (!sessionSecret()) return null;
   const payload = Buffer.from(
-    JSON.stringify({ username: user.username, role: user.role, exp: Math.floor(Date.now() / 1000) + sessionMaxAgeSeconds }),
+    JSON.stringify({ username: user.username, accountId: user.accountId, role: user.role, exp: Math.floor(Date.now() / 1000) + sessionMaxAgeSeconds }),
   ).toString("base64url");
   return `${payload}.${signSession(payload)}`;
 }
@@ -146,8 +152,10 @@ function currentUser(req) {
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (!session?.username || !session?.role || Number(session.exp) < Date.now() / 1000) return null;
-    const user = usersStore().users.find((item) => item.username === session.username && item.role === session.role);
-    return user ? { username: user.username, role: user.role } : null;
+    const user = usersStore().users.find((item) => session.accountId
+      ? item.accountId === session.accountId
+      : item.username === session.username && item.role === session.role);
+    return user ? { username: user.username, accountId: user.accountId, role: user.role } : null;
   } catch {
     return null;
   }
@@ -166,6 +174,17 @@ function clearSessionCookie(req) {
 function publicUser(user) {
   return { username: user.username, role: user.role, createdAt: user.createdAt, lastLoginAt: user.lastLoginAt || null };
 }
+
+function migrateStoredAccountIds() {
+  const users = usersStore().users;
+  for (const task of taskStore.list()) {
+    const migrated = migrateTaskAccountId(task, users);
+    if (migrated !== task) taskStore.patch(task.id, { accountId: migrated.accountId });
+  }
+  usageLedger.migrateAccountIds((username) => accountIdForUsername(users, username));
+}
+
+migrateStoredAccountIds();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -564,13 +583,17 @@ async function submitOnePrediction(request, uploadedImages) {
     request,
   );
 
+  const predictionId = String(body?.data?.id || "");
   const immediate = outputUrlsFrom(body);
-  if (immediate.length > 0) return { images: immediate };
+  if (immediate.length > 0) {
+    if (predictionId) predictionRequests.set(predictionId, { provider: request.provider, nanoModel: request.nanoModel });
+    return { id: predictionId || null, images: immediate, completed: true };
+  }
 
   const id = body?.data?.id;
   if (!id) throw new Error("WaveSpeedAI 没有返回任务 ID。");
   predictionRequests.set(String(id), { provider: request.provider, nanoModel: request.nanoModel });
-  return { id: String(id) };
+  return { id: String(id), completed: false };
 }
 
 async function handleGenerate(req, res) {
@@ -642,8 +665,19 @@ function patchTaskAndUsage(id, changes, queueBilling = false) {
   return task;
 }
 
+function ownerIdentity(owner) {
+  const username = String(typeof owner === "string" ? owner : owner?.username || "").trim();
+  const users = usersStore().users;
+  const user = users.find((item) => item.username === username);
+  return {
+    username,
+    accountId: String(typeof owner === "object" && owner?.accountId || user?.accountId || accountIdForUsername(users, username)),
+  };
+}
+
 function createTaskAndUsage(input) {
-  const task = taskStore.create(input);
+  const owner = ownerIdentity(input.owner);
+  const task = taskStore.create({ ...input, owner: owner.username, accountId: owner.accountId });
   recordUsageTask(task);
   return task;
 }
@@ -679,9 +713,19 @@ async function executeWorkbenchTask(queuedTask) {
   try {
     patchTaskAndUsage(task.id, { status: "running", error: "" });
     const request = task.input;
-    const existingPredictionId = task.predictionId || task.predictionIds?.[0];
-    if (existingPredictionId) {
-      const urls = await pollPrediction(existingPredictionId, request);
+    const existingPredictionIds = recoveryPredictionIds(task);
+    if (existingPredictionIds.length) {
+      const resolved = (await Promise.all(existingPredictionIds.map((id) => pollPrediction(id, request)))).flat();
+      const urls = mergeResultUrls(task.results, resolved);
+      const expectedPredictionCount = Number(task.expectedPredictionCount) || 0;
+      if (expectedPredictionCount > existingPredictionIds.length) {
+        patchTaskAndUsage(task.id, {
+          status: "error",
+          results: urls.map((url) => ({ url })),
+          error: "Task recovery found fewer submitted predictions than expected; retry is required before completion.",
+        }, true);
+        return;
+      }
       patchTaskAndUsage(task.id, { status: task.status === "cancel_requested" ? "cancelled" : "done", results: urls.map((url) => ({ url })), error: "" }, true);
       return;
     }
@@ -689,15 +733,23 @@ async function executeWorkbenchTask(queuedTask) {
       const model = videoModelInfo(request.modelId);
       const body = await wavespeedFetch(`/${model.endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(videoPayloadFor(request)) }, request);
       const immediate = outputUrlsFrom(body);
+      const [predictionId] = predictionIdsFromResponse(body);
+      if (predictionId) predictionRequests.set(predictionId, { provider: request.provider, nanoModel: request.nanoModel });
       if (immediate.length) {
-        patchTaskAndUsage(task.id, { status: "done", results: immediate.map((url) => ({ url })) }, true);
+        const predictionIds = mergePredictionIds(task.predictionIds, predictionId ? [predictionId] : []);
+        patchTaskAndUsage(task.id, {
+          status: "done",
+          results: mergeResultUrls(task.results, immediate).map((url) => ({ url })),
+          ...(predictionIds.length ? { predictionId: predictionIds[0], predictionIds } : {}),
+          error: "",
+        }, true);
         return;
       }
-      const predictionId = String(body?.data?.id || "");
       if (!predictionId) throw new Error("WaveSpeedAI 没有返回任务 ID。");
-      patchTaskAndUsage(task.id, { predictionId, predictionIds: [predictionId] });
+      const predictionIds = mergePredictionIds(task.predictionIds, [predictionId]);
+      patchTaskAndUsage(task.id, { predictionId: predictionIds[0], predictionIds });
       const urls = await pollPrediction(predictionId, request);
-      patchTaskAndUsage(task.id, { status: "done", results: urls.map((url) => ({ url })), error: "" }, true);
+      patchTaskAndUsage(task.id, { status: "done", results: mergeResultUrls(task.results, urls).map((url) => ({ url })), error: "" }, true);
       return;
     }
     const imageInputs = Array.isArray(request.images) ? request.images : [];
@@ -716,20 +768,20 @@ async function executeWorkbenchTask(queuedTask) {
     }
     const count = Math.max(1, Math.min(8, Number(request.count) || 1));
     const batches = [];
-    const submits = request.provider === "grok" ? 1 : count;
+    const submits = request.provider === "grok" || isEditMultiRequest(request) ? 1 : count;
     let predictionIds = [...(task.predictionIds || [])];
     for (let index = 0; index < submits; index += 1) {
       const batch = await submitOnePrediction(request, images);
       batches.push(batch);
       if (batch.id) {
-        predictionIds = [...new Set([...predictionIds, batch.id])];
+        predictionIds = mergePredictionIds(predictionIds, [batch.id]);
         patchTaskAndUsage(task.id, { predictionId: predictionIds[0], predictionIds });
       }
     }
     const urls = batches.flatMap((batch) => batch.images || []);
-    const ids = batches.flatMap((batch) => batch.id ? [batch.id] : []);
+    const ids = batches.flatMap((batch) => batch.id && !batch.completed ? [batch.id] : []);
     const resolved = (await Promise.all(ids.map((id) => pollPrediction(id, request)))).flat();
-    patchTaskAndUsage(task.id, { status: "done", results: [...urls, ...resolved].map((url) => ({ url })), error: "" }, true);
+    patchTaskAndUsage(task.id, { status: "done", results: mergeResultUrls(task.results, [...urls, ...resolved]).map((url) => ({ url })), error: "" }, true);
   } catch (error) {
     taskStore.patch(task.id, { status: "error", error: error instanceof Error ? error.message : "任务执行失败，请稍后重试。" });
   }
@@ -774,11 +826,12 @@ async function handleStageImage(req, res, owner) {
 }
 
 async function createWorkbenchTask(input, owner) {
+  const ownerInfo = ownerIdentity(owner);
   if (input?.kind === "video") {
     const normalized = { ...input, kind: "video" };
     const errors = validateVideoInput(normalized);
     if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
-    return createTaskAndUsage({ id: taskId(), owner, kind: "video", status: "queued", input: normalized, results: [], error: "", predictionId: null, predictionIds: [] });
+    return createTaskAndUsage({ id: taskId(), owner: ownerInfo, kind: "video", expectedPredictionCount: 1, status: "queued", input: normalized, results: [], error: "", predictionId: null, predictionIds: [] });
   }
   if (!input?.prompt?.trim()) throw Object.assign(new Error("请先输入提示词。"), { statusCode: 400 });
   normalizeRequestOptions(input);
@@ -794,16 +847,16 @@ async function createWorkbenchTask(input, owner) {
     throw Object.assign(new Error("图片上传状态不一致，请重新上传后再试。"), { statusCode: 400 });
   }
   const stagedImages = referencedUploads.length > 0
-    ? claimStagedUploadReferences(images, { owner, taskId: id, store: stagedUploadStore })
+    ? claimStagedUploadReferences(images, { owner: ownerInfo.username, taskId: id, store: stagedUploadStore })
     : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
-  return createTaskAndUsage({ id, owner, kind: "image", status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
+  return createTaskAndUsage({ id, owner: ownerInfo, kind: "image", expectedPredictionCount: isGrokImageRequest(input) || isEditMultiRequest(input) ? 1 : Math.max(1, Math.min(8, Number(input.count) || 1)), status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
 }
 
 async function handleTasksCreate(req, res, owner, videoOnly = false) {
   try {
     const input = await readJsonBody(req);
     if (videoOnly && input?.kind !== "video") throw Object.assign(new Error("该接口只接受视频任务。"), { statusCode: 400 });
-    const task = await createWorkbenchTask(input, owner.username);
+    const task = await createWorkbenchTask(input, owner);
     taskScheduler.enqueue(task);
     sendJson(res, 201, { task: publicTask(task) });
   } catch (error) {
@@ -812,14 +865,19 @@ async function handleTasksCreate(req, res, owner, videoOnly = false) {
 }
 
 function handleTasksList(res, owner) {
-  sendJson(res, 200, { tasks: taskStore.list().filter((task) => task.owner === owner.username).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicTask) });
+  sendJson(res, 200, { tasks: taskStore.list().filter((task) => task.accountId ? task.accountId === owner.accountId : task.owner === owner.username).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicTask) });
+}
+
+function ownsTask(task, owner) {
+  return Boolean(task && (task.accountId ? task.accountId === owner.accountId : task.owner === owner.username));
 }
 
 function handleTaskRetry(req, res, owner) {
   const id = decodeURIComponent(req.url.match(/^\/workbench\/tasks\/([^/]+)\/retry/)?.[1] || "");
   const task = taskStore.get(id);
+  if (task && !ownsTask(task, owner)) return sendJson(res, 404, { message: "Task not found." });
   if (!task || task.owner !== owner.username) return sendJson(res, 404, { message: "任务不存在。" });
-  const retry = createTaskAndUsage({ id: taskId(), owner: owner.username, kind: task.kind, status: "queued", input: task.input, results: [], error: "", predictionId: null, predictionIds: [], retryOf: task.id });
+  const retry = createTaskAndUsage({ id: taskId(), owner, kind: task.kind, expectedPredictionCount: task.expectedPredictionCount || (task.kind === "video" ? 1 : Math.max(1, Math.min(8, Number(task.input?.count) || 1))), status: "queued", input: task.input, results: [], error: "", predictionId: null, predictionIds: [], retryOf: task.id });
   taskScheduler.enqueue(retry);
   sendJson(res, 201, { task: publicTask(retry) });
 }
@@ -827,6 +885,7 @@ function handleTaskRetry(req, res, owner) {
 function handleTaskCancel(req, res, owner) {
   const id = decodeURIComponent(req.url.match(/^\/workbench\/tasks\/([^/]+)\/cancel/)?.[1] || "");
   const task = taskStore.get(id);
+  if (task && !ownsTask(task, owner)) return sendJson(res, 404, { message: "Task not found." });
   if (!task || task.owner !== owner.username) return sendJson(res, 404, { message: "任务不存在。" });
   const status = task.status === "queued" ? "cancelled" : "cancel_requested";
   sendJson(res, 200, { task: publicTask(patchTaskAndUsage(id, { status, cancelledAt: new Date().toISOString() }, true)) });
@@ -877,7 +936,7 @@ async function handleLogin(req, res) {
 
 function handleCurrentUser(req, res) {
   const user = requireUser(req, res);
-  if (user) sendJson(res, 200, { user });
+  if (user) sendJson(res, 200, { user: publicUser(user) });
 }
 
 function handleLogout(req, res) {
@@ -909,7 +968,7 @@ async function handleCreateUser(req, res) {
       sendJson(res, 409, { message: "That username already exists." });
       return;
     }
-    const user = { username, passwordHash: hashPassword(password), role, createdAt: new Date().toISOString(), lastLoginAt: null };
+    const user = { username, accountId: randomBytes(16).toString("hex"), passwordHash: hashPassword(password), role, createdAt: new Date().toISOString(), lastLoginAt: null };
     store.users.push(user);
     writeUsersStore(store);
     sendJson(res, 201, { user: publicUser(user) });

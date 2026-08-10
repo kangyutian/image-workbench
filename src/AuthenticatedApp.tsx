@@ -85,9 +85,14 @@ function formatUsageUsd(value: number) {
 }
 
 function UsageAccountRow({ account }: { account: UsageAccountSummary }) {
+  const billingLabel = account.billingFailedCount > 0
+    ? `账单同步失败 ${account.billingFailedCount} 个`
+    : account.billingPendingCount > 0
+      ? `账单待同步 ${account.billingPendingCount} 个`
+      : account.status === "deleted" ? "已删除账号" : "活跃账号";
   return <details className="usage-account-row">
     <summary>
-      <span className="usage-account-name"><strong>{account.username}</strong><small className={account.status === "deleted" ? "deleted-account" : ""}>{account.status === "deleted" ? "已删除账号" : "活跃账号"}</small></span>
+      <span className="usage-account-name"><strong>{account.username}</strong><small className={account.status === "deleted" || account.billingFailedCount > 0 ? "deleted-account" : ""}>{billingLabel}</small></span>
       <span>{account.taskCount}</span>
       <span>{account.successCount} / {account.failureCount}</span>
       <span>{account.resultCount}</span>
@@ -95,7 +100,7 @@ function UsageAccountRow({ account }: { account: UsageAccountSummary }) {
     </summary>
     <div className="usage-model-detail">
       {account.models.length === 0 ? <span className="muted">暂无任务记录</span> : account.models.map((model) => <div className="usage-model-row" key={`${model.kind}:${model.modelId}`}>
-        <span><strong>{model.modelId}</strong><small>{model.kind === "image" ? "图片" : "视频"}</small></span>
+        <span><strong>{model.modelId}</strong><small>{model.billingFailedCount > 0 ? `账单失败 ${model.billingFailedCount}` : model.billingPendingCount > 0 ? `账单待同步 ${model.billingPendingCount}` : model.kind === "image" ? "图片" : "视频"}</small></span>
         <span>{model.taskCount} 个任务</span>
         <span>{model.successCount} 成功 / {model.failureCount} 失败</span>
         <span>{model.resultCount} 个结果</span>
@@ -158,7 +163,7 @@ function UsageManagement() {
       </section>
       <section className="usage-table-wrap">
         <div className="usage-table-head"><span>账号</span><span>任务数</span><span>成功 / 失败</span><span>结果数</span><span>实际费用</span></div>
-        <div className="usage-account-list">{usage.accounts.length === 0 ? <div className="user-loading">暂无账号记录</div> : usage.accounts.map((account) => <UsageAccountRow account={account} key={account.username} />)}</div>
+        <div className="usage-account-list">{usage.accounts.length === 0 ? <div className="user-loading">暂无账号记录</div> : usage.accounts.map((account) => <UsageAccountRow account={account} key={`${account.accountId}:${account.username}`} />)}</div>
       </section>
       <p className="usage-footnote">统计从 {formatDate(usage.trackingStartedAt)} 开始；费用仅采用 WaveSpeed Billing 返回并按 prediction UUID 匹配的扣费记录。</p>
     </> : null}

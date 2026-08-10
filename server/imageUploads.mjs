@@ -154,7 +154,7 @@ export function purgeExpiredStagedUploads({
 
 export function publicTask(task) {
   const clone = JSON.parse(JSON.stringify(task));
-  for (const key of ["predictionId", "predictionIds", "billingRecords", "amountUsd", "billingSync"]) delete clone[key];
+  for (const key of ["owner", "accountId", "predictionId", "predictionIds", "predictionSettlements", "billingRecords", "amountUsd", "billingSync", "expectedPredictionCount"]) delete clone[key];
   if (Array.isArray(clone?.input?.images)) clone.input.images = clone.input.images.map(publicImageMetadata);
   return clone;
 }

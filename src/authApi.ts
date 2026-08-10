@@ -15,9 +15,12 @@ export interface UsageModelSummary {
   failureCount: number;
   resultCount: number;
   amountUsd: number;
+  billingPendingCount: number;
+  billingFailedCount: number;
 }
 
 export interface UsageAccountSummary {
+  accountId: string;
   username: string;
   status: "active" | "deleted";
   role: WorkbenchRole | null;
@@ -28,6 +31,8 @@ export interface UsageAccountSummary {
   failureCount: number;
   resultCount: number;
   amountUsd: number;
+  billingPendingCount: number;
+  billingFailedCount: number;
   models: UsageModelSummary[];
 }
 
@@ -35,7 +40,7 @@ export interface UsageSummary {
   trackingStartedAt: string;
   lastSyncedAt: string | null;
   pendingSyncCount: number;
-  totals: Omit<UsageAccountSummary, "username" | "status" | "role" | "models">;
+  totals: Omit<UsageAccountSummary, "accountId" | "username" | "status" | "role" | "models" | "billingPendingCount" | "billingFailedCount">;
   accounts: UsageAccountSummary[];
   sync: {
     running: boolean;
