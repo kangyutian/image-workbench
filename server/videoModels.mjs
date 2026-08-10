@@ -1,3 +1,5 @@
+import { maxVideoReferenceImages } from "../shared/videoFramePolicy.mjs";
+
 const IMAGE_TO_VIDEO_RATIOS = ["16:9", "9:16", "4:3", "3:4", "1:1"];
 
 export const VIDEO_MODELS = {
@@ -134,7 +136,9 @@ export function validateVideoInput(input = {}) {
   const normalized = normalizeVideoInput(input);
   const model = videoModelInfo(normalized.modelId);
   const errors = [];
+  const maxReferenceImages = maxVideoReferenceImages(model.id);
   if (normalized.referenceImages.length === 0) errors.push("请先上传参考图。");
+  if (normalized.referenceImages.length > maxReferenceImages) errors.push(`This model only supports ${maxReferenceImages === 1 ? "one image" : "two images"}.`);
   if (model.requiresPrompt && !normalized.prompt) errors.push("请先输入运动提示词。");
   if (model.mode === "motion-control" && typeof normalized.motionVideo?.url !== "string") errors.push("请上传动作参考视频。");
   return errors;
@@ -146,6 +150,7 @@ export function videoPayloadFor(input = {}) {
   if (errors.length) throw new Error(errors[0]);
   const model = videoModelInfo(request.modelId);
   const image = firstUrl(request.referenceImages);
+  const endImage = request.referenceImages[1]?.url;
 
   if (model.mode === "motion-control") {
     return {
@@ -158,7 +163,7 @@ export function videoPayloadFor(input = {}) {
   }
 
   if (request.modelId === "kling-3-std-image-to-video" || request.modelId === "kling-3-pro-image-to-video") {
-    return { image, ...(request.prompt ? { prompt: request.prompt } : {}), duration: request.duration };
+    return { image, ...(endImage ? { end_image: endImage } : {}), ...(request.prompt ? { prompt: request.prompt } : {}), duration: request.duration };
   }
 
   if (request.modelId === "grok-imagine-video-v1.5-image-to-video") {
@@ -168,6 +173,7 @@ export function videoPayloadFor(input = {}) {
   return {
     prompt: request.prompt,
     image,
+    ...(endImage ? { last_image: endImage } : {}),
     aspect_ratio: request.aspectRatio,
     resolution: request.resolution,
     duration: request.duration,
