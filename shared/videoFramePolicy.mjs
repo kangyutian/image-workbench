@@ -13,3 +13,9 @@ export function supportsVideoEndFrame(modelId) {
 export function maxVideoReferenceImages(modelId) {
   return supportsVideoEndFrame(modelId) ? 2 : 1;
 }
+
+export function orderedVideoReferences(startUrl, endUrl, modelId) {
+  const result = startUrl ? [{ url: startUrl }] : [];
+  if (endUrl && supportsVideoEndFrame(modelId)) result.push({ url: endUrl });
+  return result;
+}
