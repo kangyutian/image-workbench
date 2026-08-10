@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
+import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
   estimateCost,
   formatUsd,
@@ -334,6 +335,8 @@ function App() {
   const videoStartImageInputRef = useRef<HTMLInputElement | null>(null);
   const videoEndImageInputRef = useRef<HTMLInputElement | null>(null);
   const motionVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoStartImageReadGuardRef = useRef(createLatestRequestGuard());
+  const videoEndImageReadGuardRef = useRef(createLatestRequestGuard());
 
   const isAnyRunning = tasks.some((task) => task.status === "running");
   const activeImageCount = tasks.filter((task) => task.status === "running").length;
@@ -371,6 +374,17 @@ function App() {
     setVideoTasks((current) => [next, ...current.filter((task) => task.id !== next.id)]);
   }
 
+  function readVideoImage(file: File, guard: LatestRequestGuard, setImage: (media: VideoMedia) => void) {
+    const token = guard.begin();
+    void readMedia(file)
+      .then((media) => {
+        if (guard.isCurrent(token)) setImage(media);
+      })
+      .catch(() => {
+        if (guard.isCurrent(token)) setVideoError("图片读取失败。");
+      });
+  }
+
   async function submitVideoTask() {
     if (!videoStartImage) { setVideoError("请先上传参考图。"); return; }
     if (videoNeedsPrompt(videoModel) && !videoPrompt.trim()) { setVideoError("请先输入运动提示词。"); return; }
@@ -401,6 +415,7 @@ function App() {
   }
 
   function useImageForVideo(image: GeneratedImage) {
+    videoStartImageReadGuardRef.current.cancel();
     setVideoStartImage({ id: createId(), fileName: "generated-input.png", dataUrl: image.url, mimeType: "image/png" });
     setCreationKind("video"); setTaskFilter("all"); setVideoError("");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -923,7 +938,7 @@ function App() {
         <div className="batch-heading"><div><p className="eyebrow">Video creation</p><h2>视频任务创建</h2><span>图片与视频任务独立创建、共享服务器并发队列。</span></div><button className="primary" type="button" disabled={isCreatingVideo} onClick={() => void submitVideoTask()}>{isCreatingVideo ? <Loader2 className="spin" size={18} /> : <Video size={18} />}{isCreatingVideo ? "正在提交..." : "创建视频任务"}</button></div>
         <div className="video-create-grid">
           <div className="video-fields">
-            <label className="field"><span>视频模型</span><select value={videoModel} onChange={(event) => { const next = event.target.value as VideoModelId; setVideoModel(next); if (!supportsVideoEndFrame(next)) setVideoEndImage(null); setVideoDuration(videoDurationOptions(next)[0]); setVideoResolution(videoResolutionOptions(next)[0] ?? "720p"); setVideoError(""); }}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini · 图生视频 · 低成本试片</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast · 图生视频 · 快速成片</option><option value="seedance-2-image-to-video">Seedance 2.0 · 图生视频 · 正式成片</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard · 图生视频</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro · 图生视频 · 高质量成片</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5 · 图生视频</option></select></label>
+            <label className="field"><span>视频模型</span><select value={videoModel} onChange={(event) => { const next = event.target.value as VideoModelId; videoEndImageReadGuardRef.current.cancel(); setVideoModel(next); if (!supportsVideoEndFrame(next)) setVideoEndImage(null); setVideoDuration(videoDurationOptions(next)[0]); setVideoResolution(videoResolutionOptions(next)[0] ?? "720p"); setVideoError(""); }}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini · 图生视频 · 低成本试片</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast · 图生视频 · 快速成片</option><option value="seedance-2-image-to-video">Seedance 2.0 · 图生视频 · 正式成片</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard · 图生视频</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro · 图生视频 · 高质量成片</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5 · 图生视频</option></select></label>
             <label className="field"><span>{isMotionControlVideo(videoModel) ? "可选动作提示词" : videoNeedsPrompt(videoModel) ? "运动提示词" : "可选运动提示词"}</span><textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} placeholder="描述动作、镜头、节奏和氛围..." rows={4} /></label>
             {isMotionControlVideo(videoModel) ? <div className="param-grid video-param-grid"><label className="field"><span>角色方向</span><select value={videoOrientation} onChange={(event) => setVideoOrientation(event.target.value as "image" | "video")}><option value="image">以人物图片方向为准</option><option value="video">以动作视频方向为准</option></select></label><label className="field"><span>保留参考音频</span><select value={keepOriginalSound ? "yes" : "no"} onChange={(event) => setKeepOriginalSound(event.target.value === "yes")}><option value="yes">保留</option><option value="no">不保留</option></select></label></div> : <div className="param-grid video-param-grid"><label className="field"><span>时长</span><select value={videoDuration} onChange={(event) => setVideoDuration(Number(event.target.value))}>{videoDurationOptions(videoModel).map((item) => <option key={item} value={item}>{item} 秒</option>)}</select></label>{videoSupportsAspectRatio(videoModel) && <label className="field"><span>画面比例</span><select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>{aspectOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>}{videoResolutionOptions(videoModel).length > 0 && <label className="field"><span>分辨率</span><select value={videoResolution} onChange={(event) => setVideoResolution(event.target.value)}>{videoResolutionOptions(videoModel).map((item) => <option key={item} value={item}>{item === "4k" ? "4K" : item}</option>)}</select></label>}{videoSupportsAudio(videoModel) && <label className="field"><span>生成音频</span><select value={videoAudio ? "yes" : "no"} onChange={(event) => setVideoAudio(event.target.value === "yes")}><option value="yes">生成</option><option value="no">关闭</option></select></label>}</div>}
           </div>
@@ -935,9 +950,9 @@ function App() {
                 {videoStartImage ? <img className="video-reference-preview" src={videoStartImage.dataUrl} alt="视频首帧图片" /> : <span>可上传图片或从已有图片结果带入</span>}
                 <div className="video-frame-actions">
                   <button className="secondary" type="button" onClick={() => videoStartImageInputRef.current?.click()}>{videoStartImage ? "替换图片" : "选择图片"}</button>
-                  {videoStartImage && <button className="ghost" type="button" onClick={() => setVideoStartImage(null)}><Trash2 size={16} />移除</button>}
+                  {videoStartImage && <button className="ghost" type="button" onClick={() => { videoStartImageReadGuardRef.current.cancel(); setVideoStartImage(null); }}><Trash2 size={16} />移除</button>}
                 </div>
-                <input ref={videoStartImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then(setVideoStartImage).catch(() => setVideoError("图片读取失败。")); event.currentTarget.value = ""; }} />
+                <input ref={videoStartImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) readVideoImage(file, videoStartImageReadGuardRef.current, setVideoStartImage); event.currentTarget.value = ""; }} />
               </div>
               {videoAllowsEndFrame && <div className="video-frame-slot dropzone compact-dropzone">
                 <ImagePlus size={24} />
@@ -945,9 +960,9 @@ function App() {
                 {videoEndImage ? <img className="video-reference-preview" src={videoEndImage.dataUrl} alt="视频尾帧图片" /> : <span>可上传图片作为视频结束画面</span>}
                 <div className="video-frame-actions">
                   <button className="secondary" type="button" onClick={() => videoEndImageInputRef.current?.click()}>{videoEndImage ? "替换图片" : "选择图片"}</button>
-                  {videoEndImage && <button className="ghost" type="button" onClick={() => setVideoEndImage(null)}><Trash2 size={16} />移除</button>}
+                  {videoEndImage && <button className="ghost" type="button" onClick={() => { videoEndImageReadGuardRef.current.cancel(); setVideoEndImage(null); }}><Trash2 size={16} />移除</button>}
                 </div>
-                <input ref={videoEndImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then(setVideoEndImage).catch(() => setVideoError("图片读取失败。")); event.currentTarget.value = ""; }} />
+                <input ref={videoEndImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) readVideoImage(file, videoEndImageReadGuardRef.current, setVideoEndImage); event.currentTarget.value = ""; }} />
               </div>}
             </div>
             {isMotionControlVideo(videoModel) && <div className="dropzone compact-dropzone"><Video size={24} /><strong>动作参考视频（必填）</strong><span>{motionVideo?.fileName ?? "MP4、WebM 或 MOV"}</span><button className="secondary" type="button" onClick={() => motionVideoInputRef.current?.click()}>选择动作视频</button><input ref={motionVideoInputRef} type="file" accept="video/mp4,video/webm,video/quicktime" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then(setMotionVideo).catch(() => setVideoError("视频读取失败。")); event.currentTarget.value = ""; }} /></div>}

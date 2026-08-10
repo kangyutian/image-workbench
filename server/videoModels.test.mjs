@@ -123,3 +123,28 @@ test("rejects a second image for single-image models", () => {
   const refs = [{ url: "https://cdn/start.png" }, { url: "https://cdn/end.png" }];
   assert.match(validateVideoInput(grokInput(refs))[0], /only supports one image/i);
 });
+
+test("rejects three images for a model that supports an end frame", () => {
+  const errors = validateVideoInput(
+    seedanceInput([
+      { url: "https://cdn/start.png" },
+      { url: "https://cdn/end.png" },
+      { url: "https://cdn/extra.png" },
+    ]),
+  );
+
+  assert.match(errors[0], /only supports two images/i);
+});
+
+test("rejects a second image for Kling motion-control", () => {
+  const errors = validateVideoInput({
+    modelId: "kling-3-std-motion-control",
+    referenceImages: [
+      { url: "https://cdn/character.png" },
+      { url: "https://cdn/end.png" },
+    ],
+    motionVideo: { url: "https://cdn/motion.mp4" },
+  });
+
+  assert.match(errors[0], /only supports one image/i);
+});
