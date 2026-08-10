@@ -7,6 +7,45 @@ export interface WorkbenchUser {
   lastLoginAt?: string | null;
 }
 
+export interface UsageModelSummary {
+  kind: "image" | "video";
+  modelId: string;
+  taskCount: number;
+  successCount: number;
+  failureCount: number;
+  resultCount: number;
+  amountUsd: number;
+}
+
+export interface UsageAccountSummary {
+  username: string;
+  status: "active" | "deleted";
+  role: WorkbenchRole | null;
+  taskCount: number;
+  imageTaskCount: number;
+  videoTaskCount: number;
+  successCount: number;
+  failureCount: number;
+  resultCount: number;
+  amountUsd: number;
+  models: UsageModelSummary[];
+}
+
+export interface UsageSummary {
+  trackingStartedAt: string;
+  lastSyncedAt: string | null;
+  pendingSyncCount: number;
+  totals: Omit<UsageAccountSummary, "username" | "status" | "role" | "models">;
+  accounts: UsageAccountSummary[];
+  sync: {
+    running: boolean;
+    lastStartedAt: string | null;
+    lastFinishedAt: string | null;
+    lastError: string | null;
+    pendingSyncCount: number;
+  };
+}
+
 async function request(path: string, init?: RequestInit) {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
   const body = await response.json().catch(() => ({}));
@@ -36,4 +75,12 @@ export async function createUser(username: string, password: string, role: Workb
 
 export async function deleteUser(username: string) {
   await request(`/admin/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+}
+
+export async function getUsageSummary(): Promise<UsageSummary> {
+  return (await request("/admin/usage")).usage as UsageSummary;
+}
+
+export async function syncUsage() {
+  return request("/admin/usage/sync", { method: "POST" });
 }

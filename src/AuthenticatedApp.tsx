@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Image, Loader2, LogOut, Plus, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { BarChart3, Image, Loader2, LogOut, Plus, RefreshCw, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import App from "./App";
-import { createUser, deleteUser, getCurrentUser, listUsers, signIn, signOut, type WorkbenchRole, type WorkbenchUser } from "./authApi";
+import { createUser, deleteUser, getCurrentUser, getUsageSummary, listUsers, signIn, signOut, syncUsage, type UsageAccountSummary, type UsageSummary, type WorkbenchRole, type WorkbenchUser } from "./authApi";
 
-type View = "workbench" | "users";
+type View = "workbench" | "users" | "usage";
 
 function LoginScreen({ onSignedIn }: { onSignedIn: (user: WorkbenchUser) => void }) {
   const [username, setUsername] = useState("");
@@ -80,6 +80,91 @@ function UserManagement({ currentUser }: { currentUser: WorkbenchUser }) {
 
 function formatDate(value?: string | null) { return value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "-"; }
 
+function formatUsageUsd(value: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 3, maximumFractionDigits: 6 }).format(value || 0);
+}
+
+function UsageAccountRow({ account }: { account: UsageAccountSummary }) {
+  return <details className="usage-account-row">
+    <summary>
+      <span className="usage-account-name"><strong>{account.username}</strong><small className={account.status === "deleted" ? "deleted-account" : ""}>{account.status === "deleted" ? "已删除账号" : "活跃账号"}</small></span>
+      <span>{account.taskCount}</span>
+      <span>{account.successCount} / {account.failureCount}</span>
+      <span>{account.resultCount}</span>
+      <strong>{formatUsageUsd(account.amountUsd)}</strong>
+    </summary>
+    <div className="usage-model-detail">
+      {account.models.length === 0 ? <span className="muted">暂无任务记录</span> : account.models.map((model) => <div className="usage-model-row" key={`${model.kind}:${model.modelId}`}>
+        <span><strong>{model.modelId}</strong><small>{model.kind === "image" ? "图片" : "视频"}</small></span>
+        <span>{model.taskCount} 个任务</span>
+        <span>{model.successCount} 成功 / {model.failureCount} 失败</span>
+        <span>{model.resultCount} 个结果</span>
+        <strong>{formatUsageUsd(model.amountUsd)}</strong>
+      </div>)}
+    </div>
+  </details>;
+}
+
+function UsageManagement() {
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState("");
+
+  async function refresh() {
+    try {
+      setError("");
+      setUsage(await getUsageSummary());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法加载用量统计。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  useEffect(() => {
+    if (!usage?.sync.running) return undefined;
+    const timer = window.setInterval(() => { void refresh(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [usage?.sync.running]);
+
+  async function forceSync() {
+    setSyncing(true);
+    setError("");
+    try {
+      await syncUsage();
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "账单同步启动失败。");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return <section className="usage-admin" aria-label="账号用量统计">
+    <header className="usage-admin-header">
+      <div><p className="eyebrow">Account usage</p><h1>账号用量统计</h1><p>按账号查看任务数量、生成结果与 WaveSpeed 实际扣费。</p></div>
+      <button className="secondary-button" type="button" onClick={() => void forceSync()} disabled={syncing || usage?.sync.running}><RefreshCw size={17} className={syncing || usage?.sync.running ? "spin" : ""} />{syncing || usage?.sync.running ? "同步中" : "刷新账单"}</button>
+    </header>
+    {error && <p className="inline-error">{error}</p>}
+    {loading && !usage ? <div className="user-loading"><Loader2 className="spin" size={20} />正在加载用量统计</div> : usage ? <>
+      <section className="usage-summary-grid">
+        <div><span>累计实际费用</span><strong>{formatUsageUsd(usage.totals.amountUsd)}</strong></div>
+        <div><span>累计任务</span><strong>{usage.totals.taskCount}</strong><small>{usage.totals.imageTaskCount} 图片 · {usage.totals.videoTaskCount} 视频</small></div>
+        <div><span>使用账号</span><strong>{usage.accounts.filter((account) => account.taskCount > 0).length}</strong><small>共 {usage.accounts.length} 个账号</small></div>
+        <div><span>待同步账单</span><strong>{usage.pendingSyncCount}</strong><small>{usage.lastSyncedAt ? `上次同步：${formatDate(usage.lastSyncedAt)}` : "尚未同步"}</small></div>
+      </section>
+      <section className="usage-table-wrap">
+        <div className="usage-table-head"><span>账号</span><span>任务数</span><span>成功 / 失败</span><span>结果数</span><span>实际费用</span></div>
+        <div className="usage-account-list">{usage.accounts.length === 0 ? <div className="user-loading">暂无账号记录</div> : usage.accounts.map((account) => <UsageAccountRow account={account} key={account.username} />)}</div>
+      </section>
+      <p className="usage-footnote">统计从 {formatDate(usage.trackingStartedAt)} 开始；费用仅采用 WaveSpeed Billing 返回并按 prediction UUID 匹配的扣费记录。</p>
+    </> : null}
+  </section>;
+}
+
 export default function AuthenticatedApp() {
   const [user, setUser] = useState<WorkbenchUser | null>(null);
   const [ready, setReady] = useState(false);
@@ -88,5 +173,5 @@ export default function AuthenticatedApp() {
   if (!ready) return <main className="boot-screen"><Loader2 className="spin" size={26} /></main>;
   if (!user) return <LoginScreen onSignedIn={setUser} />;
   async function logout() { await signOut(); setUser(null); setView("workbench"); }
-  return <div className="protected-shell"><aside className="app-sidebar"><div className="brand"><Image size={24} /><span>AI 生图工作台</span></div><nav><button className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}><Image size={19} />工作台</button>{user.role === "admin" && <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}><Users size={19} />用户管理</button>}</nav><div className="sidebar-account"><span><ShieldCheck size={17} />{user.username}</span><button title="退出登录" onClick={() => void logout()}><LogOut size={18} /></button></div></aside><main className="protected-content">{view === "users" && user.role === "admin" ? <UserManagement currentUser={user} /> : <App />}</main></div>;
+  return <div className="protected-shell"><aside className="app-sidebar"><div className="brand"><Image size={24} /><span>AI 生图工作台</span></div><nav><button className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}><Image size={19} />工作台</button>{user.role === "admin" && <><button className={view === "users" ? "active" : ""} onClick={() => setView("users")}><Users size={19} />用户管理</button><button className={view === "usage" ? "active" : ""} onClick={() => setView("usage")}><BarChart3 size={19} />用量统计</button></>}</nav><div className="sidebar-account"><span><ShieldCheck size={17} />{user.username}</span><button title="退出登录" onClick={() => void logout()}><LogOut size={18} /></button></div></aside><main className="protected-content">{view === "users" && user.role === "admin" ? <UserManagement currentUser={user} /> : view === "usage" && user.role === "admin" ? <UsageManagement /> : <App />}</main></div>;
 }

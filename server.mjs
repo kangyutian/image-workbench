@@ -17,6 +17,10 @@ import {
 import { TaskStore } from "./server/taskStore.mjs";
 import { validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
 import { envKeyForModelRequest, grokImageModelInfo, grokPayloadFor, isGrokImageRequest, normalizeGrokImageInput, validateGrokImageInput } from "./server/grokModels.mjs";
+import { UsageLedger } from "./server/usageLedger.mjs";
+import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
+import { summarizeUsage } from "./server/usageStats.mjs";
+import { usageResponse } from "./server/usageApi.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -26,6 +30,7 @@ const maxImportedImageBytes = 30 * 1024 * 1024;
 const usersFile = resolve("data", "users.json");
 const tasksFile = resolve("data", "tasks.json");
 const stagedUploadsFile = resolve("data", "staged-uploads.json");
+const usageLedgerFile = resolve("data", "usage-ledger.json");
 const stagedImagesRoot = resolve("data", "staged-images");
 const maxReferenceImages = 10;
 const stagedUploadCleanupIntervalMs = 60 * 60 * 1000;
@@ -35,9 +40,16 @@ const predictionRequests = new Map();
 loadLocalEnv();
 const taskStore = new TaskStore({ file: tasksFile });
 const stagedUploadStore = new TaskStore({ file: stagedUploadsFile });
+const usageLedger = new UsageLedger({ file: usageLedgerFile });
 const taskScheduler = new TaskScheduler({
   maxConcurrent: Number(process.env.WORKBENCH_MAX_CONCURRENT_GENERATIONS || 2),
   run: executeWorkbenchTask,
+});
+const usageSynchronizer = new UsageSynchronizer({
+  ledger: usageLedger,
+  keyForEntry: usageEnvKeyForEntry,
+  apiKeyForEnvKey: billingApiKeyForEnvKey,
+  baseUrl: wavespeedBaseUrl,
 });
 
 function cleanupExpiredStagedUploads() {
@@ -248,6 +260,17 @@ function cleanApiKey(rawKey = "") {
 function envKeyForRequest(request = {}) {
   if (request.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
   return envKeyForModelRequest(request);
+}
+
+function usageEnvKeyForEntry(entry = {}) {
+  if (entry.kind === "image" && entry.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
+  return envKeyForModelRequest(entry.kind === "video"
+    ? { kind: "video", modelId: entry.modelId }
+    : { kind: "image", provider: entry.provider, nanoModel: entry.modelId });
+}
+
+function billingApiKeyForEnvKey(envKey) {
+  return cleanApiKey(process.env[envKey] || process.env.WAVESPEED_API_KEY || "");
 }
 
 function wavespeedApiKeyFor(request = {}) {
@@ -607,6 +630,24 @@ function taskId() {
   return `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
 }
 
+function recordUsageTask(task, queueBilling = false) {
+  if (!task) return;
+  usageLedger.upsertTask(task);
+  if (queueBilling) usageSynchronizer.enqueue();
+}
+
+function patchTaskAndUsage(id, changes, queueBilling = false) {
+  const task = taskStore.patch(id, changes);
+  recordUsageTask(task, queueBilling);
+  return task;
+}
+
+function createTaskAndUsage(input) {
+  const task = taskStore.create(input);
+  recordUsageTask(task);
+  return task;
+}
+
 function publicMediaUrl(media) {
   return typeof media?.dataUrl === "string" && /^https?:\/\//i.test(media.dataUrl) ? media.dataUrl : typeof media?.url === "string" ? media.url : "";
 }
@@ -636,11 +677,12 @@ async function executeWorkbenchTask(queuedTask) {
   const task = taskStore.get(queuedTask.id);
   if (!task || task.status === "cancelled" || task.status === "done") return;
   try {
-    taskStore.patch(task.id, { status: "running", error: "" });
+    patchTaskAndUsage(task.id, { status: "running", error: "" });
     const request = task.input;
-    if (task.predictionId) {
-      const urls = await pollPrediction(task.predictionId, request);
-      taskStore.patch(task.id, { status: task.status === "cancel_requested" ? "cancelled" : "done", results: urls.map((url) => ({ url })), error: "" });
+    const existingPredictionId = task.predictionId || task.predictionIds?.[0];
+    if (existingPredictionId) {
+      const urls = await pollPrediction(existingPredictionId, request);
+      patchTaskAndUsage(task.id, { status: task.status === "cancel_requested" ? "cancelled" : "done", results: urls.map((url) => ({ url })), error: "" }, true);
       return;
     }
     if (task.kind === "video") {
@@ -648,14 +690,14 @@ async function executeWorkbenchTask(queuedTask) {
       const body = await wavespeedFetch(`/${model.endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(videoPayloadFor(request)) }, request);
       const immediate = outputUrlsFrom(body);
       if (immediate.length) {
-        taskStore.patch(task.id, { status: "done", results: immediate.map((url) => ({ url })) });
+        patchTaskAndUsage(task.id, { status: "done", results: immediate.map((url) => ({ url })) }, true);
         return;
       }
       const predictionId = String(body?.data?.id || "");
       if (!predictionId) throw new Error("WaveSpeedAI 没有返回任务 ID。");
-      taskStore.patch(task.id, { predictionId });
+      patchTaskAndUsage(task.id, { predictionId, predictionIds: [predictionId] });
       const urls = await pollPrediction(predictionId, request);
-      taskStore.patch(task.id, { status: "done", results: urls.map((url) => ({ url })), error: "" });
+      patchTaskAndUsage(task.id, { status: "done", results: urls.map((url) => ({ url })), error: "" }, true);
       return;
     }
     const imageInputs = Array.isArray(request.images) ? request.images : [];
@@ -666,7 +708,7 @@ async function executeWorkbenchTask(queuedTask) {
         return { ...metadata, dataUrl: images[index] };
       });
       request.images = persistedImages;
-      taskStore.patch(task.id, { input: request });
+      patchTaskAndUsage(task.id, { input: request });
       cleanupStagedImageFiles(imageInputs, { root: stagedImagesRoot });
       for (const image of imageInputs) {
         if (image?.stagedUploadId) stagedUploadStore.remove(image.stagedUploadId);
@@ -675,15 +717,23 @@ async function executeWorkbenchTask(queuedTask) {
     const count = Math.max(1, Math.min(8, Number(request.count) || 1));
     const batches = [];
     const submits = request.provider === "grok" ? 1 : count;
-    for (let index = 0; index < submits; index += 1) batches.push(await submitOnePrediction(request, images));
+    let predictionIds = [...(task.predictionIds || [])];
+    for (let index = 0; index < submits; index += 1) {
+      const batch = await submitOnePrediction(request, images);
+      batches.push(batch);
+      if (batch.id) {
+        predictionIds = [...new Set([...predictionIds, batch.id])];
+        patchTaskAndUsage(task.id, { predictionId: predictionIds[0], predictionIds });
+      }
+    }
     const urls = batches.flatMap((batch) => batch.images || []);
     const ids = batches.flatMap((batch) => batch.id ? [batch.id] : []);
-    if (ids.length) taskStore.patch(task.id, { predictionId: ids[0] });
     const resolved = (await Promise.all(ids.map((id) => pollPrediction(id, request)))).flat();
-    taskStore.patch(task.id, { status: "done", results: [...urls, ...resolved].map((url) => ({ url })), error: "" });
+    patchTaskAndUsage(task.id, { status: "done", results: [...urls, ...resolved].map((url) => ({ url })), error: "" }, true);
   } catch (error) {
     taskStore.patch(task.id, { status: "error", error: error instanceof Error ? error.message : "任务执行失败，请稍后重试。" });
   }
+  recordUsageTask(taskStore.get(task.id), true);
 }
 
 async function handleUploadMedia(req, res) {
@@ -728,7 +778,7 @@ async function createWorkbenchTask(input, owner) {
     const normalized = { ...input, kind: "video" };
     const errors = validateVideoInput(normalized);
     if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
-    return taskStore.create({ id: taskId(), owner, kind: "video", status: "queued", input: normalized, results: [], error: "", predictionId: null });
+    return createTaskAndUsage({ id: taskId(), owner, kind: "video", status: "queued", input: normalized, results: [], error: "", predictionId: null, predictionIds: [] });
   }
   if (!input?.prompt?.trim()) throw Object.assign(new Error("请先输入提示词。"), { statusCode: 400 });
   normalizeRequestOptions(input);
@@ -746,7 +796,7 @@ async function createWorkbenchTask(input, owner) {
   const stagedImages = referencedUploads.length > 0
     ? claimStagedUploadReferences(images, { owner, taskId: id, store: stagedUploadStore })
     : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
-  return taskStore.create({ id, owner, kind: "image", status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null });
+  return createTaskAndUsage({ id, owner, kind: "image", status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
 }
 
 async function handleTasksCreate(req, res, owner, videoOnly = false) {
@@ -769,7 +819,7 @@ function handleTaskRetry(req, res, owner) {
   const id = decodeURIComponent(req.url.match(/^\/workbench\/tasks\/([^/]+)\/retry/)?.[1] || "");
   const task = taskStore.get(id);
   if (!task || task.owner !== owner.username) return sendJson(res, 404, { message: "任务不存在。" });
-  const retry = taskStore.create({ id: taskId(), owner: owner.username, kind: task.kind, status: "queued", input: task.input, results: [], error: "", predictionId: null, retryOf: task.id });
+  const retry = createTaskAndUsage({ id: taskId(), owner: owner.username, kind: task.kind, status: "queued", input: task.input, results: [], error: "", predictionId: null, predictionIds: [], retryOf: task.id });
   taskScheduler.enqueue(retry);
   sendJson(res, 201, { task: publicTask(retry) });
 }
@@ -779,7 +829,7 @@ function handleTaskCancel(req, res, owner) {
   const task = taskStore.get(id);
   if (!task || task.owner !== owner.username) return sendJson(res, 404, { message: "任务不存在。" });
   const status = task.status === "queued" ? "cancelled" : "cancel_requested";
-  sendJson(res, 200, { task: publicTask(taskStore.patch(id, { status, cancelledAt: new Date().toISOString() })) });
+  sendJson(res, 200, { task: publicTask(patchTaskAndUsage(id, { status, cancelledAt: new Date().toISOString() }, true)) });
 }
 
 function requireUser(req, res) {
@@ -892,6 +942,31 @@ function handleDeleteUser(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+function currentUsageSummary() {
+  const sync = usageSynchronizer.status();
+  return {
+    ...summarizeUsage({
+      trackingStartedAt: usageLedger.snapshot().trackingStartedAt,
+      lastSyncedAt: usageLedger.snapshot().lastSyncedAt,
+      pendingSyncCount: sync.pendingSyncCount,
+      users: usersStore().users,
+      entries: usageLedger.list(),
+    }),
+    sync,
+  };
+}
+
+function handleUsageGet(req, res) {
+  if (!requireAdmin(req, res)) return;
+  sendJson(res, 200, usageResponse(currentUsageSummary()));
+}
+
+function handleUsageSync(req, res) {
+  if (!requireAdmin(req, res)) return;
+  void usageSynchronizer.sync({ force: true }).catch(() => undefined);
+  sendJson(res, 202, { accepted: true, sync: usageSynchronizer.status() });
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const requested = decodeURIComponent(url.pathname);
@@ -946,6 +1021,16 @@ const httpServer = createServer((req, res) => {
 
   if (req.url?.startsWith("/auth/logout") && req.method === "POST") {
     handleLogout(req, res);
+    return;
+  }
+
+  if (req.url === "/admin/usage" && req.method === "GET") {
+    handleUsageGet(req, res);
+    return;
+  }
+
+  if (req.url === "/admin/usage/sync" && req.method === "POST") {
+    handleUsageSync(req, res);
     return;
   }
 
@@ -1038,10 +1123,15 @@ httpServer.listen(port, "0.0.0.0", () => {
 
 for (const task of taskStore.list()) {
   const action = recoveryAction(task);
-  if (action === "enqueue") taskScheduler.enqueue(task);
+  if (action === "enqueue") {
+    recordUsageTask(task);
+    taskScheduler.enqueue(task);
+  }
   if (action === "requeue") {
-    const recovered = taskStore.patch(task.id, { status: "queued", error: "" });
+    const recovered = patchTaskAndUsage(task.id, { status: "queued", error: "" });
     if (recovered) taskScheduler.enqueue(recovered);
   }
-  if (action === "cancel") taskStore.patch(task.id, { status: "cancelled", cancelledAt: new Date().toISOString() });
+  if (action === "cancel") patchTaskAndUsage(task.id, { status: "cancelled", cancelledAt: new Date().toISOString() }, true);
 }
+
+if (usageLedger.pendingCount() > 0) usageSynchronizer.enqueue();

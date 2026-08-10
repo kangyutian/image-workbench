@@ -113,6 +113,19 @@ test("public task responses hide local paths and inline image bytes", () => {
   assert.equal(JSON.stringify(task).includes("base64"), false);
 });
 
+test("public task responses hide prediction and billing internals", () => {
+  const task = publicTask({
+    id: "task-private",
+    predictionId: "prediction-1",
+    predictionIds: ["prediction-1", "prediction-2"],
+    billingRecords: [{ uuid: "billing-1", price: 0.12 }],
+  });
+
+  assert.equal("predictionId" in task, false);
+  assert.equal("predictionIds" in task, false);
+  assert.equal("billingRecords" in task, false);
+});
+
 test("cleanup removes only the selected task staging directory", () => {
   const root = mkdtempSync(join(tmpdir(), "image-workbench-stage-"));
   try {
