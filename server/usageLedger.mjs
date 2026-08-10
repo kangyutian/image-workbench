@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { legacyAccountId } from "./accountIdentity.mjs";
 import { billingRetryDelayMs } from "./billing.mjs";
 
-const MAX_NO_CHARGE_ATTEMPTS = 7;
+export const MAX_AUTOMATIC_BILLING_ATTEMPTS = 6;
 const TERMINAL_PREDICTION_STATUSES = new Set(["charged", "no_charge"]);
 
 function clone(value) {
@@ -35,7 +35,7 @@ function defaultBillingSync(predictionIds) {
 }
 
 function validPredictionStatus(status) {
-  return ["pending", "charged", "no_charge", "failed"].includes(status) ? status : "pending";
+  return ["pending", "charged", "no_charge", "unresolved", "failed"].includes(status) ? status : "pending";
 }
 
 function normalizeSettlement(value, fallbackStatus = "pending") {
@@ -57,6 +57,7 @@ function aggregateStatus(predictionIds, settlements) {
   if (!predictionIds.length) return "complete";
   const values = predictionIds.map((id) => settlements[id]).filter(Boolean);
   if (values.some((settlement) => settlement.status === "failed")) return "failed";
+  if (values.some((settlement) => settlement.status === "unresolved")) return "unresolved";
   return values.length === predictionIds.length && values.every(isSettled) ? "complete" : "pending";
 }
 
@@ -114,14 +115,19 @@ function normalizeState(parsed, startAt) {
         ? "charged"
         : billingSync.status === "failed" || billingSync.error
           ? "failed"
-          : billingSync.status === "complete"
-            ? "no_charge"
-            : "pending";
+          : "pending";
       predictionSettlements[predictionId] = normalizeSettlement(raw.predictionSettlements?.[predictionId], fallbackStatus);
       if (matching) predictionSettlements[predictionId].status = "charged";
     }
     const status = aggregateStatus(predictionIds, predictionSettlements);
     if (billingSync.status !== status) changed = true;
+    if (status === "pending" && billingSync.status === "complete") {
+      billingSync.attempts = 0;
+      billingSync.lastAttemptAt = null;
+      billingSync.nextAttemptAt = null;
+      billingSync.error = null;
+      changed = true;
+    }
     state.entries.push({
       taskId,
       accountId: raw.accountId ? String(raw.accountId) : null,
@@ -151,9 +157,7 @@ function settlementsForIds(ids, existing = {}, billingSync = {}, billingRecords 
       ? "charged"
       : billingSync.status === "failed" || billingSync.error
         ? "failed"
-        : billingSync.status === "complete"
-          ? "no_charge"
-          : "pending";
+      : "pending";
     settlements[predictionId] = normalizeSettlement(existing[predictionId], fallbackStatus);
     if (matching) settlements[predictionId].status = "charged";
   }
@@ -284,12 +288,12 @@ export class UsageLedger {
       const settlementAttempts = Math.max(attemptNumber, (Number(settlement.attempts) || 0) + 1);
       const charged = acceptedPredictionIds.has(predictionId);
       const terminal = successful && charged;
-      settlement.status = terminal ? "charged" : successful && settlementAttempts >= MAX_NO_CHARGE_ATTEMPTS ? "no_charge" : successful ? "pending" : "failed";
+      settlement.status = terminal ? "charged" : successful && settlementAttempts >= MAX_AUTOMATIC_BILLING_ATTEMPTS ? "unresolved" : successful ? "pending" : "failed";
       settlement.attempts = settlementAttempts;
       settlement.lastAttemptAt = attemptedAtIso;
-      settlement.nextAttemptAt = TERMINAL_PREDICTION_STATUSES.has(settlement.status)
+      settlement.nextAttemptAt = TERMINAL_PREDICTION_STATUSES.has(settlement.status) || settlementAttempts >= MAX_AUTOMATIC_BILLING_ATTEMPTS
         ? null
-        : new Date(Date.parse(attemptedAtIso) + billingRetryDelayMs(settlementAttempts - 1)).toISOString();
+        : new Date(Date.parse(attemptedAtIso) + billingRetryDelayMs(settlementAttempts)).toISOString();
       settlement.error = successful ? null : "WaveSpeed billing sync is temporarily unavailable.";
     }
 
@@ -306,7 +310,11 @@ export class UsageLedger {
       attempts: attemptNumber,
       lastAttemptAt: attemptedAtIso,
       nextAttemptAt,
-      error: status === "failed" ? "WaveSpeed billing sync is temporarily unavailable." : null,
+      error: status === "failed"
+        ? "WaveSpeed billing sync is temporarily unavailable."
+        : status === "unresolved"
+          ? "WaveSpeed billing record was not found during the automatic retry window."
+          : null,
       syncedAt: attemptedAtIso,
     };
     this.state.lastSyncedAt = attemptedAtIso;
@@ -344,6 +352,7 @@ export class UsageLedger {
       if (!entry.predictionIds?.length || entry.billingSync.status === "complete") return false;
       if (force) return true;
       const nextAttemptAt = entry.billingSync.nextAttemptAt ? Date.parse(entry.billingSync.nextAttemptAt) : 0;
+      if (Number(entry.billingSync.attempts) >= MAX_AUTOMATIC_BILLING_ATTEMPTS && !nextAttemptAt) return false;
       return !nextAttemptAt || nextAttemptAt <= nowMs;
     }).map(clone);
   }

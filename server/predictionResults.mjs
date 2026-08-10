@@ -24,3 +24,16 @@ export function recoveryPredictionIds(task = {}) {
 export function mergeResultUrls(existing = [], incoming = []) {
   return [...new Set([...existing, ...incoming].map(resultUrl).filter(Boolean))];
 }
+
+export function reconcileRecoveryResults(existingResults = [], settledResults = []) {
+  const fulfilled = settledResults
+    .filter((result) => result?.status === "fulfilled")
+    .flatMap((result) => Array.isArray(result.value) ? result.value : []);
+  const failedCount = settledResults.filter((result) => result?.status === "rejected").length;
+  return {
+    urls: mergeResultUrls(existingResults, fulfilled),
+    status: failedCount > 0 ? "error" : "done",
+    failedCount,
+    error: failedCount > 0 ? "One or more predictions failed during recovery." : "",
+  };
+}

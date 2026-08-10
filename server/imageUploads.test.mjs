@@ -155,19 +155,49 @@ test("claims owner-matched staged uploads once and returns internal file metadat
     store.create({
       id: "upload-one",
       owner: "alice",
+      accountId: "account-alice",
       image: { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedPath: "upload-one/0.png" },
       claimedBy: null,
     });
 
     assert.deepEqual(claimStagedUploadReferences([
       { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedUploadId: "upload-one" },
-    ], { owner: "alice", taskId: "task-one", store }), [
+    ], { owner: "alice", accountId: "account-alice", taskId: "task-one", store }), [
       { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedPath: "upload-one/0.png" },
     ]);
     assert.equal(store.get("upload-one").claimedBy, "task-one");
     assert.throws(
-      () => claimStagedUploadReferences([{ stagedUploadId: "upload-one" }], { owner: "alice", taskId: "task-two", store }),
+      () => claimStagedUploadReferences([{ stagedUploadId: "upload-one" }], { owner: "alice", accountId: "account-alice", taskId: "task-two", store }),
       /不可用|使用/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects legacy or same-name account staged uploads after account migration", () => {
+  const root = mkdtempSync(join(tmpdir(), "workbench-identity-staged-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    store.create({
+      id: "legacy-upload",
+      owner: "same-name",
+      image: { id: "legacy", fileName: "legacy.png", mimeType: "image/png", size: 3, stagedPath: "legacy-upload/0.png" },
+      claimedBy: null,
+    });
+    store.create({
+      id: "old-account-upload",
+      owner: "same-name",
+      accountId: "account-old",
+      image: { id: "old", fileName: "old.png", mimeType: "image/png", size: 3, stagedPath: "old-account-upload/0.png" },
+      claimedBy: null,
+    });
+
+    assert.throws(
+      () => claimStagedUploadReferences([{ stagedUploadId: "legacy-upload" }], { owner: "same-name", accountId: "account-new", taskId: "task-new", store }),
+    );
+    assert.throws(
+      () => claimStagedUploadReferences([{ stagedUploadId: "old-account-upload" }], { owner: "same-name", accountId: "account-new", taskId: "task-new", store }),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

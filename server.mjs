@@ -3,7 +3,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, stat
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { extname, join, normalize, resolve } from "node:path";
 import { recoveryAction, TaskScheduler } from "./server/taskScheduler.mjs";
-import { accountIdForUsername, ensureAccountIds, migrateTaskAccountId } from "./server/accountIdentity.mjs";
+import { accountIdForUsername, ensureAccountIds, migrateTaskAccountId, resolveSessionUser } from "./server/accountIdentity.mjs";
 import {
   claimStagedUploadReferences,
   cleanupStagedImageFiles,
@@ -22,7 +22,7 @@ import { UsageLedger } from "./server/usageLedger.mjs";
 import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
-import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, recoveryPredictionIds } from "./server/predictionResults.mjs";
+import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -152,9 +152,7 @@ function currentUser(req) {
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (!session?.username || !session?.role || Number(session.exp) < Date.now() / 1000) return null;
-    const user = usersStore().users.find((item) => session.accountId
-      ? item.accountId === session.accountId
-      : item.username === session.username && item.role === session.role);
+    const user = resolveSessionUser(session, usersStore().users);
     return user ? { username: user.username, accountId: user.accountId, role: user.role } : null;
   } catch {
     return null;
@@ -715,14 +713,15 @@ async function executeWorkbenchTask(queuedTask) {
     const request = task.input;
     const existingPredictionIds = recoveryPredictionIds(task);
     if (existingPredictionIds.length) {
-      const resolved = (await Promise.all(existingPredictionIds.map((id) => pollPrediction(id, request)))).flat();
-      const urls = mergeResultUrls(task.results, resolved);
+      const settled = await Promise.allSettled(existingPredictionIds.map((id) => pollPrediction(id, request)));
+      const recovery = reconcileRecoveryResults(task.results, settled);
+      const urls = recovery.urls;
       const expectedPredictionCount = Number(task.expectedPredictionCount) || 0;
-      if (expectedPredictionCount > existingPredictionIds.length) {
+      if (recovery.failedCount > 0 || expectedPredictionCount > existingPredictionIds.length) {
         patchTaskAndUsage(task.id, {
           status: "error",
           results: urls.map((url) => ({ url })),
-          error: "Task recovery found fewer submitted predictions than expected; retry is required before completion.",
+          error: recovery.failedCount > 0 ? recovery.error : "Task recovery found fewer submitted predictions than expected; retry is required before completion.",
         }, true);
         return;
       }
@@ -809,7 +808,7 @@ async function handleStageImage(req, res, owner) {
       maxBytes: maxImportedImageBytes,
     })[0];
     const image = { ...staged, stagedUploadId: uploadId };
-    stagedUploadStore.create({ id: uploadId, owner: owner.username, image, claimedBy: null, consumedAt: null });
+    stagedUploadStore.create({ id: uploadId, owner: owner.username, accountId: owner.accountId, image, claimedBy: null, consumedAt: null });
     sendJson(res, 201, {
       media: {
         id: image.id,
@@ -847,7 +846,7 @@ async function createWorkbenchTask(input, owner) {
     throw Object.assign(new Error("图片上传状态不一致，请重新上传后再试。"), { statusCode: 400 });
   }
   const stagedImages = referencedUploads.length > 0
-    ? claimStagedUploadReferences(images, { owner: ownerInfo.username, taskId: id, store: stagedUploadStore })
+    ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: stagedUploadStore })
     : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
   return createTaskAndUsage({ id, owner: ownerInfo, kind: "image", expectedPredictionCount: isGrokImageRequest(input) || isEditMultiRequest(input) ? 1 : Math.max(1, Math.min(8, Number(input.count) || 1)), status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
 }

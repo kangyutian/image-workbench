@@ -65,7 +65,7 @@ test("marks a missing billing response pending with a bounded next retry", async
     const sync = ledger.get("task-2").billingSync;
     assert.equal(sync.status, "pending");
     assert.equal(sync.attempts, 1);
-    assert.equal(sync.nextAttemptAt, "2026-08-10T00:03:15.000Z");
+    assert.equal(sync.nextAttemptAt, "2026-08-10T00:04:00.000Z");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -102,7 +102,7 @@ test("schedules the next retry after the current promise has been cleared", asyn
     });
 
     await synchronizer.sync();
-    assert.deepEqual(scheduled.map((item) => item.delay), [15_000]);
+    assert.deepEqual(scheduled.map((item) => item.delay), [60_000]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -125,7 +125,7 @@ test("uses every approved retry delay and settles successful no-charge searches 
       clearTimeoutImpl: () => undefined,
     });
 
-    const expectedDelays = [15_000, 60_000, 300_000, 1_800_000, 7_200_000, 86_400_000];
+    const expectedDelays = [60_000, 300_000, 1_800_000, 7_200_000, 86_400_000];
     for (const expectedDelay of expectedDelays) {
       await synchronizer.sync();
       assert.equal(scheduled[scheduled.length - 1].delay, expectedDelay);
@@ -133,8 +133,9 @@ test("uses every approved retry delay and settles successful no-charge searches 
     }
 
     await synchronizer.sync();
-    assert.equal(ledger.get("task-delay-sequence").billingSync.status, "complete");
-    assert.equal(ledger.pendingCount(), 0);
+    assert.equal(ledger.get("task-delay-sequence").billingSync.status, "unresolved");
+    assert.equal(ledger.get("task-delay-sequence").billingSync.nextAttemptAt, null);
+    assert.equal(ledger.pendingCount(), 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -197,8 +198,65 @@ test("keeps API and credential failures unresolved for a later manual sync", asy
     const entry = ledger.get("task-failure");
     assert.equal(entry.billingSync.status, "failed");
     assert.equal(entry.billingSync.error, "WaveSpeed billing sync is temporarily unavailable.");
+    assert.equal(entry.billingSync.nextAttemptAt, null);
     assert.equal(ledger.pendingCount(), 1);
     assert.equal(entry.amountUsd, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("uses the initial 15-second enqueue only once, then stops automatic retries after the six-query schedule", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-bounded-retry-"));
+  try {
+    let nowMs = Date.parse("2026-08-10T00:03:00.000Z");
+    let fetchCalls = 0;
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-bounded", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "done", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-bounded"] });
+    const scheduled = [];
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ data: { page: 1, total: 0, items: [] } }), { status: 200 });
+      },
+      now: () => new Date(nowMs),
+      setTimeoutImpl: (callback, delay) => { scheduled.push({ callback, delay }); return { unref() {} }; },
+      clearTimeoutImpl: () => undefined,
+    });
+
+    synchronizer.enqueue();
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000]);
+
+    await synchronizer.sync();
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000, 60_000]);
+    nowMs = Date.parse(ledger.get("task-bounded").billingSync.nextAttemptAt);
+
+    for (const expectedDelay of [300_000, 1_800_000, 7_200_000, 86_400_000]) {
+      await synchronizer.sync();
+      assert.equal(scheduled[scheduled.length - 1].delay, expectedDelay);
+      const nextAttemptAt = ledger.get("task-bounded").billingSync.nextAttemptAt;
+      if (nextAttemptAt) nowMs = Date.parse(nextAttemptAt);
+    }
+
+    await synchronizer.sync();
+    const exhausted = ledger.get("task-bounded");
+    assert.equal(fetchCalls, 6);
+    assert.equal(exhausted.billingSync.attempts, 6);
+    assert.equal(exhausted.billingSync.status, "unresolved");
+    assert.equal(exhausted.billingSync.nextAttemptAt, null);
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000, 60_000, 300_000, 1_800_000, 7_200_000, 86_400_000]);
+
+    synchronizer.enqueue();
+    assert.equal(scheduled.length, 6);
+    await synchronizer.sync();
+    assert.equal(fetchCalls, 6);
+    await synchronizer.sync({ force: true });
+    assert.equal(fetchCalls, 7);
+    assert.equal(ledger.get("task-bounded").billingSync.status, "unresolved");
+    assert.equal(scheduled.length, 6);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

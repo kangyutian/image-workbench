@@ -1,4 +1,5 @@
 import { billingRetryDelayMs, searchBillingRecords } from "./billing.mjs";
+import { MAX_AUTOMATIC_BILLING_ATTEMPTS } from "./usageLedger.mjs";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -45,7 +46,8 @@ export class UsageSynchronizer {
   }
 
   enqueue() {
-    this.schedule(15_000);
+    const delay = this.nextDelay();
+    if (delay !== null) this.schedule(delay);
   }
 
   async sync({ force = false } = {}) {
@@ -57,7 +59,8 @@ export class UsageSynchronizer {
     const runPromise = this.runSync({ force });
     this.currentPromise = runPromise.finally(() => {
       this.currentPromise = null;
-      if (this.ledger.pendingCount() > 0) this.schedule(this.nextDelay());
+      const delay = this.nextDelay();
+      if (this.ledger.pendingCount() > 0 && delay !== null) this.schedule(delay);
     });
     return this.currentPromise;
   }
@@ -106,12 +109,15 @@ export class UsageSynchronizer {
   }
 
   nextDelay() {
-    const pending = this.ledger.list().filter((entry) => entry.predictionIds?.length && entry.billingSync?.status !== "complete");
+    const pending = this.ledger.list().filter((entry) => {
+      if (!entry.predictionIds?.length || entry.billingSync?.status === "complete") return false;
+      return Number(entry.billingSync?.attempts) < MAX_AUTOMATIC_BILLING_ATTEMPTS || Boolean(entry.billingSync?.nextAttemptAt);
+    });
     const delays = pending
       .map((entry) => entry.billingSync?.nextAttemptAt ? Date.parse(entry.billingSync.nextAttemptAt) - new Date(this.now()).getTime() : billingRetryDelayMs(0))
       .filter((delay) => Number.isFinite(delay))
       .map((delay) => Math.max(0, delay));
-    return delays.length ? Math.min(...delays) : billingRetryDelayMs(0);
+    return delays.length ? Math.min(...delays) : null;
   }
 
   status() {

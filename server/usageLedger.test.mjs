@@ -104,3 +104,37 @@ test("migrates legacy ledger rows to an immutable account ID without changing th
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("migrates a v1 complete task with uncovered predictions as pending, not no-charge", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-v1-partial-"));
+  const file = join(directory, "usage-ledger.json");
+  try {
+    writeFileSync(file, `${JSON.stringify({
+      version: 1,
+      trackingStartedAt: "2026-08-10T00:00:00.000Z",
+      lastSyncedAt: null,
+      entries: [{
+        taskId: "v1-partial",
+        owner: "alice",
+        kind: "image",
+        provider: "grok",
+        modelId: "grok-2-image",
+        createdAt: "2026-08-10T00:01:00.000Z",
+        status: "done",
+        resultCount: 2,
+        predictionIds: ["prediction-covered", "prediction-uncovered"],
+        billingRecords: [{ uuid: "billing-covered", predictionId: "prediction-covered", price: 0.12, createdAt: "2026-08-10T00:02:00.000Z" }],
+        amountUsd: 0.12,
+        billingSync: { status: "complete", attempts: 7, nextAttemptAt: null, error: null },
+      }],
+    }, null, 2)}\n`, "utf8");
+    const ledger = new UsageLedger({ file, startAt: "2026-08-10T00:00:00.000Z" });
+    const entry = ledger.get("v1-partial");
+    assert.equal(entry.predictionSettlements["prediction-covered"].status, "charged");
+    assert.equal(entry.predictionSettlements["prediction-uncovered"].status, "pending");
+    assert.equal(entry.billingSync.status, "pending");
+    assert.equal(ledger.entriesForSync({ now: new Date("2026-08-10T00:03:00.000Z") }).length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

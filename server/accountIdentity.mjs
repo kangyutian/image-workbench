@@ -29,3 +29,8 @@ export function migrateTaskAccountId(task, users) {
   if (!task || task.accountId || !task.owner) return task;
   return { ...task, accountId: accountIdForUsername(users, task.owner) };
 }
+
+export function resolveSessionUser(session, users) {
+  if (!session?.accountId || !session?.username || !session?.role) return null;
+  return (Array.isArray(users) ? users : []).find((user) => user.accountId === session.accountId && user.username === session.username && user.role === session.role) || null;
+}

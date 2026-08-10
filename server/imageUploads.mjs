@@ -117,11 +117,11 @@ export function cleanupStagedImageFiles(images, { root }) {
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
 }
 
-export function claimStagedUploadReferences(images, { owner, taskId, store }) {
+export function claimStagedUploadReferences(images, { owner, accountId, taskId, store }) {
   const claims = images.map((image) => {
     const uploadId = String(image?.stagedUploadId || "");
     const record = uploadId ? store.get(uploadId) : null;
-    if (!record || record.owner !== owner || record.claimedBy) {
+    if (!record || !accountId || record.accountId !== accountId || record.owner !== owner || record.claimedBy) {
       throw Object.assign(new Error("暂存图片不可用或已经被其他任务使用，请重新上传。"), { statusCode: 400 });
     }
     return { uploadId, record };
