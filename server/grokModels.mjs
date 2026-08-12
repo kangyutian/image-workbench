@@ -40,6 +40,9 @@ const modelKeys = {
   "grok-2-image": "WAVESPEED_GROK_2_IMAGE_KEY",
   "grok-imagine-image-edit": "WAVESPEED_GROK_IMAGINE_IMAGE_EDIT_KEY",
   "grok-imagine-image-quality": "WAVESPEED_GROK_IMAGINE_IMAGE_QUALITY_KEY",
+  "kling-image-v3-edit": "WAVESPEED_KLING_IMAGE_V3_EDIT_KEY",
+  "kling-image-o3-edit": "WAVESPEED_KLING_IMAGE_O3_EDIT_KEY",
+  "kling-image-o1": "WAVESPEED_KLING_IMAGE_O1_KEY",
 };
 
 export function isGrokImageRequest(request = {}) {

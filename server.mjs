@@ -18,6 +18,7 @@ import {
 import { TaskStore } from "./server/taskStore.mjs";
 import { validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
 import { envKeyForModelRequest, grokImageModelInfo, grokPayloadFor, isGrokImageRequest, normalizeGrokImageInput, validateGrokImageInput } from "./server/grokModels.mjs";
+import { isKlingImageRequest, klingImageModelInfo, klingImagePayloadFor, normalizeKlingImageInput, requiresDedicatedKlingImageKey, validateKlingImageInput } from "./server/klingImageModels.mjs";
 import { UsageLedger } from "./server/usageLedger.mjs";
 import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { summarizeUsage } from "./server/usageStats.mjs";
@@ -226,11 +227,13 @@ function isEditMultiRequest(request = {}) {
 
 function allowedAspectRatiosFor(request = {}) {
   if (isGrokImageRequest(request)) return grokImageModelInfo(request.nanoModel)?.aspectRatio || [];
+  if (isKlingImageRequest(request)) return klingImageModelInfo(request.nanoModel)?.aspectRatio || [];
   return isEditMultiRequest(request) ? editMultiAspectRatios : commonAspectRatios;
 }
 
 function allowedResolutionsFor(request = {}) {
   if (isGrokImageRequest(request)) return grokImageModelInfo(request.nanoModel)?.resolution || [];
+  if (isKlingImageRequest(request)) return klingImageModelInfo(request.nanoModel)?.resolution || [];
   if (isEditMultiRequest(request)) return [];
   if (request.provider === "nanobanana" && request.nanoModel === "nano-banana-2-fast") return fastResolutions;
   return commonResolutions;
@@ -239,6 +242,10 @@ function allowedResolutionsFor(request = {}) {
 function normalizeRequestOptions(request = {}) {
   if (isGrokImageRequest(request)) {
     Object.assign(request, normalizeGrokImageInput(request));
+    return request;
+  }
+  if (isKlingImageRequest(request)) {
+    Object.assign(request, normalizeKlingImageInput(request));
     return request;
   }
   const aspects = allowedAspectRatiosFor(request);
@@ -294,6 +301,11 @@ function wavespeedApiKeyFor(request = {}) {
   const envKey = envKeyForRequest(request);
   const modelKey = cleanApiKey(process.env[envKey] || "");
   const fallbackKey = cleanApiKey(process.env.WAVESPEED_API_KEY || "");
+  if (requiresDedicatedKlingImageKey(request) && !modelKey) {
+    const error = new Error(`服务器未配置该 Kling 图片模型的 WaveSpeedAI API Key。请设置 ${envKey}。`);
+    error.statusCode = 500;
+    throw error;
+  }
   return {
     apiKey: modelKey || fallbackKey,
     envKey,
@@ -489,6 +501,11 @@ function endpointFor(request, hasImages) {
     if (!model) throw new Error("请选择可用的 Grok 图片模型。");
     return model.endpoint;
   }
+  if (isKlingImageRequest(request)) {
+    const model = klingImageModelInfo(request.nanoModel);
+    if (!model) throw new Error("请选择可用的 Kling 图片模型。");
+    return model.endpoint;
+  }
   if (request.provider === "image2") {
     return hasImages ? "openai/gpt-image-2/edit" : "openai/gpt-image-2/text-to-image";
   }
@@ -501,6 +518,7 @@ function endpointFor(request, hasImages) {
 
 function payloadFor(request, uploadedImages) {
   if (isGrokImageRequest(request)) return grokPayloadFor(request, uploadedImages);
+  if (isKlingImageRequest(request)) return klingImagePayloadFor(request, uploadedImages);
   const hasImages = uploadedImages.length > 0;
   const isEditMulti = request.provider === "nanobanana" && request.nanoModel === "nano-banana-pro-edit-multi";
   const payload = {
@@ -608,7 +626,7 @@ async function handleGenerate(req, res) {
 
     const count = Math.max(1, Math.min(8, Number(request.count) || 1));
     const batches = [];
-    const submits = request.provider === "nanobanana" && request.nanoModel === "nano-banana-pro-edit-multi" || request.provider === "grok" ? 1 : count;
+    const submits = request.provider === "nanobanana" && request.nanoModel === "nano-banana-pro-edit-multi" || request.provider === "grok" || isKlingImageRequest(request) ? 1 : count;
     for (let index = 0; index < submits; index += 1) {
       batches.push(await submitOnePrediction(request, uploadedImages));
     }
@@ -767,7 +785,7 @@ async function executeWorkbenchTask(queuedTask) {
     }
     const count = Math.max(1, Math.min(8, Number(request.count) || 1));
     const batches = [];
-    const submits = request.provider === "grok" || isEditMultiRequest(request) ? 1 : count;
+    const submits = request.provider === "grok" || isKlingImageRequest(request) || isEditMultiRequest(request) ? 1 : count;
     let predictionIds = [...(task.predictionIds || [])];
     for (let index = 0; index < submits; index += 1) {
       const batch = await submitOnePrediction(request, images);
@@ -836,10 +854,14 @@ async function createWorkbenchTask(input, owner) {
   normalizeRequestOptions(input);
   const id = taskId();
   const images = Array.isArray(input.images) ? input.images : [];
-  if (isGrokImageRequest(input)) {
-    const errors = validateGrokImageInput(input, images);
-    if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
-  }
+    if (isGrokImageRequest(input)) {
+      const errors = validateGrokImageInput(input, images);
+      if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+    }
+    if (isKlingImageRequest(input)) {
+      const errors = validateKlingImageInput(input, images);
+      if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+    }
   validateReferenceImageCount(images, maxReferenceImages);
   const referencedUploads = images.filter((image) => image?.stagedUploadId);
   if (referencedUploads.length > 0 && referencedUploads.length !== images.length) {
@@ -848,7 +870,7 @@ async function createWorkbenchTask(input, owner) {
   const stagedImages = referencedUploads.length > 0
     ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: stagedUploadStore })
     : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
-  return createTaskAndUsage({ id, owner: ownerInfo, kind: "image", expectedPredictionCount: isGrokImageRequest(input) || isEditMultiRequest(input) ? 1 : Math.max(1, Math.min(8, Number(input.count) || 1)), status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
+  return createTaskAndUsage({ id, owner: ownerInfo, kind: "image", expectedPredictionCount: isGrokImageRequest(input) || isKlingImageRequest(input) || isEditMultiRequest(input) ? 1 : Math.max(1, Math.min(8, Number(input.count) || 1)), status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
 }
 
 async function handleTasksCreate(req, res, owner, videoOnly = false) {

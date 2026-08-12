@@ -1,4 +1,4 @@
-export type ProviderId = "nanobanana" | "image2" | "grok";
+export type ProviderId = "nanobanana" | "image2" | "grok" | "kling";
 
 export type NanoModelId =
   | "nano-banana-2-fast"
@@ -7,7 +7,10 @@ export type NanoModelId =
   | "nano-banana-pro-edit-multi"
   | "grok-2-image"
   | "grok-imagine-image-edit"
-  | "grok-imagine-image-quality";
+  | "grok-imagine-image-quality"
+  | "kling-image-v3-edit"
+  | "kling-image-o3-edit"
+  | "kling-image-o1";
 
 export type GenerationMode = "text-to-image" | "image-to-image" | "multi-image-fusion";
 

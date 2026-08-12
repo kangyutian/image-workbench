@@ -48,6 +48,7 @@ const MAX_TASKS = 10;
 const CONCURRENCY = 3;
 const DEFAULT_NANO_MODEL: NanoModelId = "nano-banana-2-fast";
 const DEFAULT_GROK_MODEL: NanoModelId = "grok-2-image";
+const DEFAULT_KLING_MODEL: NanoModelId = "kling-image-v3-edit";
 const PRINT_EXTRACTION_PROMPT =
   "请从参考服装图片中提取衣服正中央的印花图案，只保留印花本身，不要保留衣服、褶皱、布料纹理、模特、背景、阴影和拍摄光线。请尽量还原印花的线条、颜色、文字、卡通形象和图形细节。输出为居中构图的高清 2K 图案素材，优先透明背景；如果无法透明背景，请使用纯白背景。不要重新设计，不要改变图案内容，不要添加额外元素。";
 
@@ -190,7 +191,15 @@ function resolveMode(imageCount: number): GenerationMode {
 }
 
 function isEditMulti(provider: ProviderId, nanoModel: NanoModelId) {
+  return isNanoEditMulti(provider, nanoModel) || isKlingMultiEdit(provider, nanoModel);
+}
+
+function isNanoEditMulti(provider: ProviderId, nanoModel: NanoModelId) {
   return provider === "nanobanana" && nanoModel === "nano-banana-pro-edit-multi";
+}
+
+function isKlingMultiEdit(provider: ProviderId, nanoModel: NanoModelId) {
+  return provider === "kling" && nanoModel === "kling-image-o3-edit";
 }
 
 function isGrokEdit(provider: ProviderId, nanoModel: NanoModelId) {
@@ -201,25 +210,37 @@ function isGrokQuality(provider: ProviderId, nanoModel: NanoModelId) {
   return provider === "grok" && nanoModel === "grok-imagine-image-quality";
 }
 
+function isKlingSingleEdit(provider: ProviderId, nanoModel: NanoModelId) {
+  return provider === "kling" && nanoModel === "kling-image-v3-edit";
+}
+
+function isKlingImageModel(provider: ProviderId) {
+  return provider === "kling";
+}
+
 function supportsReferenceImages(provider: ProviderId, nanoModel: NanoModelId) {
-  return provider !== "grok" || isGrokEdit(provider, nanoModel);
+  return provider !== "grok" || isGrokEdit(provider, nanoModel) || isKlingImageModel(provider);
 }
 
 function defaultModelForProvider(provider: ProviderId, current: NanoModelId) {
   if (provider === "grok") return current.startsWith("grok-") ? current : DEFAULT_GROK_MODEL;
-  return current.startsWith("grok-") ? DEFAULT_NANO_MODEL : current;
+  if (provider === "kling") return current.startsWith("kling-") ? current : DEFAULT_KLING_MODEL;
+  return current.startsWith("grok-") || current.startsWith("kling-") ? DEFAULT_NANO_MODEL : current;
 }
 
 function aspectOptionsFor(provider: ProviderId, nanoModel: NanoModelId) {
   if (isGrokQuality(provider, nanoModel)) return grokQualityAspectOptions;
   if (provider === "grok") return [];
-  return isEditMulti(provider, nanoModel) ? editMultiAspectOptions : aspectOptions;
+  return isNanoEditMulti(provider, nanoModel) ? editMultiAspectOptions : aspectOptions;
 }
 
 function resolutionOptionsFor(provider: ProviderId, nanoModel: NanoModelId) {
   if (isGrokQuality(provider, nanoModel)) return resolutionOptions.filter((item) => item.value !== "4k");
   if (provider === "grok") return [];
-  if (isEditMulti(provider, nanoModel)) {
+  if (provider === "kling") {
+    return nanoModel === "kling-image-o3-edit" ? resolutionOptions : resolutionOptions.filter((item) => item.value !== "4k");
+  }
+  if (isNanoEditMulti(provider, nanoModel)) {
     return [];
   }
   if (provider === "nanobanana" && nanoModel === "nano-banana-2-fast") {
@@ -241,14 +262,16 @@ function normalizeResolution(provider: ProviderId, nanoModel: NanoModelId, value
 }
 
 function normalizeCount(provider: ProviderId, nanoModel: NanoModelId, value: number) {
-  if (isEditMulti(provider, nanoModel)) return 2;
+  if (isNanoEditMulti(provider, nanoModel)) return 2;
   if (isGrokEdit(provider, nanoModel)) return 1;
+  if (isKlingSingleEdit(provider, nanoModel)) return clampNumber(value, 1, 9);
+  if (isKlingImageModel(provider)) return clampNumber(value, 1, 9);
   if (provider === "grok") return clampNumber(value, 1, 4);
   return clampNumber(value, 1, 8);
 }
 
 function draftCount(provider: ProviderId, nanoModel: NanoModelId, rawValue: string, fallback: number) {
-  if (isEditMulti(provider, nanoModel)) return 2;
+  if (isNanoEditMulti(provider, nanoModel)) return 2;
   if (isGrokEdit(provider, nanoModel)) return 1;
   if (rawValue.trim() === "") return 0;
   const value = Number(rawValue);
@@ -579,7 +602,9 @@ function App() {
         task.id === taskId
           ? {
               ...task,
-              images: isGrokEdit(task.provider, task.nanoModel) ? [...task.images, ...loaded].slice(0, 1) : [...task.images, ...loaded],
+              images: isGrokEdit(task.provider, task.nanoModel) || isKlingSingleEdit(task.provider, task.nanoModel)
+                ? [...task.images, ...loaded].slice(0, 1)
+                : [...task.images, ...loaded].slice(0, task.provider === "kling" ? 10 : undefined),
               error: "",
             }
           : task,
@@ -622,6 +647,14 @@ function App() {
     }
     if (isGrokEdit(task.provider, task.nanoModel) && task.images.length !== 1) {
       updateTask(taskId, { error: "Grok Imagine Image Edit 需要恰好一张参考图。", status: "error" });
+      return;
+    }
+    if (isKlingSingleEdit(task.provider, task.nanoModel) && task.images.length !== 1) {
+      updateTask(taskId, { error: "Kling Image V3 Edit 只支持 1 张参考图。", status: "error" });
+      return;
+    }
+    if (task.provider === "kling" && task.nanoModel === "kling-image-o3-edit" && task.images.length === 0) {
+      updateTask(taskId, { error: "Kling Image O3 Edit 至少需要 1 张参考图。", status: "error" });
       return;
     }
     if (task.provider === "grok" && !isGrokEdit(task.provider, task.nanoModel) && task.images.length > 0) {
@@ -836,7 +869,7 @@ function App() {
             <div className="model-selector-block">
               <p className="eyebrow">Model</p>
               <div className="segmented compact-segmented" aria-label="选择模型">
-                {(["nanobanana", "image2", "grok"] as ProviderId[]).map((item) => (
+                {(["nanobanana", "image2", "grok", "kling"] as ProviderId[]).map((item) => (
                   <button
                     className={provider === item ? "active" : ""}
                     key={item}
@@ -851,7 +884,7 @@ function App() {
 
             {provider !== "image2" && (
               <label className="field">
-                <span>{provider === "grok" ? "Grok 图片模型" : "Nano 模型档位"}</span>
+                  <span>{provider === "grok" ? "Grok 图片模型" : provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
                 <select className="nano-model-select" value={nanoModel} onChange={(event) => changeBatchNanoModel(event.target.value as NanoModelId)}>
                   {imageModelsForProvider(provider).map((item) => (
                     <option key={item.id} value={item.id}>
@@ -870,15 +903,15 @@ function App() {
                 <span>输出图片数量</span>
                 <input
                   min={1}
-                  max={provider === "grok" ? 4 : 8}
+                   max={provider === "grok" ? 4 : provider === "kling" ? 9 : 8}
                   value={count}
                   onFocus={(event) => event.currentTarget.select()}
                   onChange={(event) => setCount(draftCount(provider, nanoModel, event.target.value, count))}
                   onBlur={() => setCount((current) => normalizeCount(provider, nanoModel, current))}
-                  disabled={isEditMulti(provider, nanoModel) || isGrokEdit(provider, nanoModel)}
+                   disabled={isNanoEditMulti(provider, nanoModel) || isGrokEdit(provider, nanoModel)}
                   type="number"
                 />
-                {isEditMulti(provider, nanoModel) ? <small>Edit Multi 固定一次输出 2 张。</small> : isGrokEdit(provider, nanoModel) ? <small>单图编辑固定输出 1 张。</small> : <small>{provider === "grok" ? "1-4 张图片" : "1-8 张图片"}</small>}
+                 {isEditMulti(provider, nanoModel) ? <small>多图编辑支持一次输出 1-9 张。</small> : isGrokEdit(provider, nanoModel) || isKlingSingleEdit(provider, nanoModel) ? <small>{isKlingSingleEdit(provider, nanoModel) ? "单图编辑，最多 9 张结果。" : "单图编辑固定输出 1 张。"}</small> : <small>{provider === "grok" ? "1-4 张图片" : provider === "kling" ? "1-9 张图片" : "1-8 张图片"}</small>}
               </label>
 
               {currentAspectOptions.length > 0 && <label className="field">
@@ -1025,6 +1058,7 @@ function App() {
                           <option value="nanobanana">nanobanana</option>
                           <option value="image2">image2</option>
                           <option value="grok">Grok</option>
+                          <option value="kling">Kling</option>
                         </select>
                         <button className="icon-button" type="button" title="删除任务" onClick={() => removeTask(task.id)}>
                           <Trash2 size={16} />
@@ -1035,7 +1069,7 @@ function App() {
                     <div className="task-param-controls" aria-label="任务生成参数">
                       {task.provider !== "image2" && (
                         <label className="mini-field wide-mini-field">
-                          <span>{task.provider === "grok" ? "Grok 图片模型" : "Nano 模型档位"}</span>
+                            <span>{task.provider === "grok" ? "Grok 图片模型" : task.provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
                           <select
                             className="nano-model-select"
                             value={task.nanoModel}
@@ -1043,7 +1077,7 @@ function App() {
                               const nextNanoModel = event.target.value as NanoModelId;
                               updateTask(task.id, {
                                 nanoModel: nextNanoModel,
-                                images: supportsReferenceImages(task.provider, nextNanoModel) ? task.images.slice(0, isGrokEdit(task.provider, nextNanoModel) ? 1 : task.images.length) : [],
+                                images: supportsReferenceImages(task.provider, nextNanoModel) ? task.images.slice(0, isGrokEdit(task.provider, nextNanoModel) || isKlingSingleEdit(task.provider, nextNanoModel) ? 1 : task.provider === "kling" ? 10 : task.images.length) : [],
                                 aspectRatio: normalizeAspect(task.provider, nextNanoModel, task.aspectRatio),
                                 resolution: normalizeResolution(task.provider, nextNanoModel, task.resolution),
                                 count: normalizeCount(task.provider, nextNanoModel, task.count),
@@ -1063,17 +1097,17 @@ function App() {
                         <span>输出图片数量</span>
                         <input
                           min={1}
-                          max={task.provider === "grok" ? 4 : 8}
+                          max={task.provider === "grok" ? 4 : task.provider === "kling" ? 9 : 8}
                           value={task.count}
                           onChange={(event) =>
                             updateTask(task.id, { count: draftCount(task.provider, task.nanoModel, event.target.value, task.count) })
                           }
                           onFocus={(event) => event.currentTarget.select()}
                           onBlur={() => updateTask(task.id, { count: normalizeCount(task.provider, task.nanoModel, task.count) })}
-                          disabled={isEditMulti(task.provider, task.nanoModel) || isGrokEdit(task.provider, task.nanoModel)}
+                           disabled={isNanoEditMulti(task.provider, task.nanoModel) || isGrokEdit(task.provider, task.nanoModel)}
                           type="number"
                         />
-                        {isEditMulti(task.provider, task.nanoModel) ? <small>固定 2 张</small> : isGrokEdit(task.provider, task.nanoModel) ? <small>固定 1 张</small> : <small>{task.provider === "grok" ? "1-4 张图片" : "1-8 张图片"}</small>}
+                        {isEditMulti(task.provider, task.nanoModel) ? <small>多图编辑，1-9 张结果</small> : isGrokEdit(task.provider, task.nanoModel) ? <small>固定 1 张</small> : <small>{task.provider === "grok" ? "1-4 张图片" : task.provider === "kling" ? "1-9 张图片" : "1-8 张图片"}</small>}
                       </label>
 
                       {taskAspectOptions.length > 0 && <label className="mini-field">
@@ -1147,7 +1181,7 @@ function App() {
                       }}
                     >
                       <UploadCloud size={24} />
-                      <strong>{isGrokEdit(task.provider, task.nanoModel) ? "上传一张参考图" : "拖拽图片到这里"}</strong>
+                        <strong>{isGrokEdit(task.provider, task.nanoModel) || isKlingSingleEdit(task.provider, task.nanoModel) ? "上传一张参考图" : task.provider === "kling" ? "拖拽 1-10 张参考图到这里" : "拖拽图片到这里"}</strong>
                       <span>
                         {task.images.length} 张参考图
                         {totalSize > 0 ? `，约 ${formatBytes(totalSize)}` : ""}
@@ -1162,7 +1196,7 @@ function App() {
                         }}
                         type="file"
                         accept="image/*"
-                        multiple={!isGrokEdit(task.provider, task.nanoModel)}
+                         multiple={!isGrokEdit(task.provider, task.nanoModel) && !isKlingSingleEdit(task.provider, task.nanoModel)}
                         hidden
                         onChange={(event) => {
                           if (event.target.files) void addFiles(task.id, event.target.files);

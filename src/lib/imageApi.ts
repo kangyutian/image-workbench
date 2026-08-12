@@ -18,6 +18,7 @@ export const providerLabels: Record<ProviderId, string> = {
   nanobanana: "nanobanana",
   image2: "image2",
   grok: "Grok",
+  kling: "Kling",
 };
 
 export const qualityLabels: Record<Quality, string> = {
@@ -126,6 +127,42 @@ export const grokModels: NanoModelInfo[] = [
   },
 ];
 
+export const klingModels: NanoModelInfo[] = [
+  {
+    id: "kling-image-v3-edit",
+    label: "Kling Image V3 Edit",
+    selectLabel: "Kling Image V3 Edit · 单图图生图 · 可批量输出多张结果",
+    shortLabel: "V3 Edit",
+    description: "单图编辑与图生图",
+    useCase: "适合换背景、改产品、改服装和局部重绘。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-v3/edit",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.028 },
+  },
+  {
+    id: "kling-image-o3-edit",
+    label: "Kling Image O3 Edit",
+    selectLabel: "Kling Image O3 Edit · 多图融合 · 支持最高 4K",
+    shortLabel: "O3 Edit",
+    description: "多图参考融合与高级编辑",
+    useCase: "适合将人物、产品、风格或场景从多张参考图融合到一起。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-o3/edit",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.056 },
+  },
+  {
+    id: "kling-image-o1",
+    label: "Kling Image O1",
+    selectLabel: "Kling Image O1 · 多参考图编辑 · 保持主体一致性",
+    shortLabel: "O1",
+    description: "多模态参考图编辑",
+    useCase: "适合人物、产品、IP 和系列内容的一致性创作。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-o1",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.028 },
+  },
+];
+
 export const image2TextPrices: Record<Quality, Record<Resolution, number>> = {
   low: { "1k": 0.01, "2k": 0.02, "4k": 0.03 },
   medium: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
@@ -146,11 +183,13 @@ function createId() {
 }
 
 export function nanoModelInfo(nanoModel: NanoModelId) {
-  return [...nanoModels, ...grokModels].find((item) => item.id === nanoModel) ?? nanoModels[0];
+  return [...nanoModels, ...grokModels, ...klingModels].find((item) => item.id === nanoModel) ?? nanoModels[0];
 }
 
 export function imageModelsForProvider(provider: ProviderId) {
-  return provider === "grok" ? grokModels : nanoModels;
+  if (provider === "grok") return grokModels;
+  if (provider === "kling") return klingModels;
+  return nanoModels;
 }
 
 export function supportsQuality(provider: ProviderId) {
