@@ -16,6 +16,9 @@ import {
   X,
 } from "lucide-react";
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
+import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
+import { createProductSuite, loadProductSuites, productSuiteZipUrl, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
+import type { ProductSuite, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteMedia, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
@@ -51,6 +54,18 @@ const DEFAULT_GROK_MODEL: NanoModelId = "grok-2-image";
 const DEFAULT_KLING_MODEL: NanoModelId = "kling-image-v3-edit";
 const PRINT_EXTRACTION_PROMPT =
   "请从参考服装图片中提取衣服正中央的印花图案，只保留印花本身，不要保留衣服、褶皱、布料纹理、模特、背景、阴影和拍摄光线。请尽量还原印花的线条、颜色、文字、卡通形象和图形细节。输出为居中构图的高清 2K 图案素材，优先透明背景；如果无法透明背景，请使用纯白背景。不要重新设计，不要改变图案内容，不要添加额外元素。";
+
+const productSuiteSlots: Array<{ slot: ProductSuiteSlot; label: string; eyebrow: string; template: string }> = [
+  { slot: "product-3d", label: "产品 3D 展示图", eyebrow: "01 · Product 3D", template: "完整保留商品主体，生成真实立体透视、自然光影和高级电商展示效果。" },
+  { slot: "model-front", label: "欧美模特正面上身图", eyebrow: "02 · Model Front", template: "欧美模特正面站姿上身展示商品，完整展示商品版型、颜色、材质和穿着效果。" },
+  { slot: "model-angle", label: "欧美模特角度上身图", eyebrow: "03 · Model Angle", template: "同一位欧美模特以三分之二角度或自然侧身姿态展示商品，突出轮廓、剪裁和版型。" },
+  { slot: "model-back", label: "欧美模特背面上身展示图", eyebrow: "04 · Model Back", template: "同一位欧美模特背对镜头展示商品背面，完整展示后背结构、肩带、扣位、轮廓和版型。" },
+  { slot: "model-scene", label: "欧美模特场景上身图", eyebrow: "05 · Model Scene", template: "同一位欧美模特自然动作和商业电商构图上身展示商品，商品仍是视觉主体。" },
+  { slot: "product-detail", label: "产品细节特写图", eyebrow: "06 · Product Detail", template: "商品局部高清细节特写，展示材质、纹理、缝线、工艺或功能细节。" },
+];
+
+const productSuiteGenderLabels: Record<ProductSuiteGender, string> = { female: "女性", male: "男性" };
+const productSuiteBodyLabels: Record<ProductSuiteBodyType, string> = { slim: "瘦", muscular: "肌肉", plus: "胖", curvy: "丰满", hourglass: "身体曲线好" };
 
 const modeLabels: Record<GenerationMode, string> = {
   "text-to-image": "文生图",
@@ -322,6 +337,21 @@ function readMedia(file: File): Promise<VideoMedia> {
   });
 }
 
+interface VideoDraft {
+  id: string;
+  modelId: VideoModelId;
+  prompt: string;
+  startImage: VideoMedia | null;
+  endImage: VideoMedia | null;
+  motionVideo: VideoMedia | null;
+  status: "idle" | "submitting";
+  error: string;
+}
+
+function createVideoDraft(): VideoDraft {
+  return { id: createId(), modelId: "seedance-2-mini-image-to-video", prompt: "", startImage: null, endImage: null, motionVideo: null, status: "idle", error: "" };
+}
+
 function App() {
   const [provider, setProvider] = useState<ProviderId>("image2");
   const [nanoModel, setNanoModel] = useState<NanoModelId>(DEFAULT_NANO_MODEL);
@@ -330,8 +360,17 @@ function App() {
   const [resolution, setResolution] = useState<Resolution>("2k");
   const [quality, setQuality] = useState<Quality>("medium");
   const [tasks, setTasks] = useState<ImageTask[]>([]);
-  const [creationKind, setCreationKind] = useState<"image" | "video">("image");
+  const [creationKind, setCreationKind] = useState<"image" | "video" | "cutout" | "print" | "suite">("image");
+  const [cutoutTasks, setCutoutTasks] = useState<CutoutTask[]>([]);
+  const [cutoutImage, setCutoutImage] = useState<UploadedImage | null>(null);
+  const [cutoutPrompt, setCutoutPrompt] = useState("main product");
+  const [cutoutBackground, setCutoutBackground] = useState<CutoutBackgroundMode>("transparent");
+  const [cutoutAutocrop, setCutoutAutocrop] = useState(true);
+  const [cutoutEdgeRefinement, setCutoutEdgeRefinement] = useState(true);
+  const [cutoutError, setCutoutError] = useState("");
+  const [isCreatingCutout, setIsCreatingCutout] = useState(false);
   const [videoTasks, setVideoTasks] = useState<VideoTask[]>([]);
+  const [videoDrafts, setVideoDrafts] = useState<VideoDraft[]>([createVideoDraft()]);
   const [videoModel, setVideoModel] = useState<VideoModelId>("seedance-2-mini-image-to-video");
   const [videoPrompt, setVideoPrompt] = useState("");
   const [videoStartImage, setVideoStartImage] = useState<VideoMedia | null>(null);
@@ -351,13 +390,30 @@ function App() {
   const [printImageUrl, setPrintImageUrl] = useState("");
   const [printError, setPrintError] = useState("");
   const [isImportingPrint, setIsImportingPrint] = useState(false);
+  const [productSuites, setProductSuites] = useState<ProductSuite[]>([]);
+  const [suiteImage, setSuiteImage] = useState<ProductSuiteMedia | null>(null);
+  const [suiteBackground, setSuiteBackground] = useState<ProductSuiteMedia | null>(null);
+  const [suiteModel, setSuiteModel] = useState<"kling" | "nanobanana">("kling");
+  const [suiteGender, setSuiteGender] = useState<ProductSuiteGender>("female");
+  const [suiteBodyType, setSuiteBodyType] = useState<ProductSuiteBodyType>("slim");
+  const [suiteBackgroundMode, setSuiteBackgroundMode] = useState<"white" | "custom">("white");
+  const [suiteProductName, setSuiteProductName] = useState("");
+  const [suiteSellingPoints, setSuiteSellingPoints] = useState("");
+  const [suiteStyle, setSuiteStyle] = useState("高级电商摄影，真实、干净、突出商品");
+  const [suitePrompts, setSuitePrompts] = useState<Partial<Record<ProductSuiteSlot, string>>>({});
+  const [suiteError, setSuiteError] = useState("");
+  const [suiteSubmitting, setSuiteSubmitting] = useState(false);
+  const suiteImageInputRef = useRef<HTMLInputElement | null>(null);
+  const suiteBackgroundInputRef = useRef<HTMLInputElement | null>(null);
   const [isDraggingTask, setIsDraggingTask] = useState("");
   const bulkPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({});
   const printFileInputRef = useRef<HTMLInputElement | null>(null);
   const videoStartImageInputRef = useRef<HTMLInputElement | null>(null);
   const videoEndImageInputRef = useRef<HTMLInputElement | null>(null);
+  const cutoutFileInputRef = useRef<HTMLInputElement | null>(null);
   const motionVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoDraftInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const videoStartImageReadGuardRef = useRef(createLatestRequestGuard());
   const videoEndImageReadGuardRef = useRef(createLatestRequestGuard());
 
@@ -393,8 +449,144 @@ function App() {
     return () => { mounted = false; window.clearInterval(timer); };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    async function refresh() {
+      try {
+        const next = await loadProductSuites();
+        if (mounted) setProductSuites(next);
+      } catch {
+        // Keep the suite form usable if the task refresh is temporarily unavailable.
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    async function refresh() {
+      try {
+        const next = await loadCutoutTasks();
+        if (mounted) setCutoutTasks(next);
+      } catch {
+        // Keep the creation form usable during a transient refresh failure.
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
+
   function updateVideoTask(next: VideoTask) {
     setVideoTasks((current) => [next, ...current.filter((task) => task.id !== next.id)]);
+  }
+
+  function updateVideoDraft(id: string, next: Partial<VideoDraft>) {
+    setVideoDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, ...next } : draft));
+  }
+
+  async function readSuiteFile(file: File): Promise<ProductSuiteMedia> {
+    const [image] = await readImages([file]);
+    if (!image) throw new Error("图片读取失败。");
+    return image;
+  }
+
+  async function submitProductSuite() {
+    if (!suiteImage) { setSuiteError("请先上传商品图片。"); return; }
+    if (suiteBackgroundMode === "custom" && !suiteBackground) { setSuiteError("请选择一张自定义背景图片。"); return; }
+    setSuiteSubmitting(true);
+    setSuiteError("");
+    try {
+      const suite = await createProductSuite({
+        images: [suiteImage],
+        ...(suiteBackground ? { backgroundImages: [suiteBackground] } : {}),
+        model: suiteModel,
+        gender: suiteGender,
+        bodyType: suiteBodyType,
+        backgroundMode: suiteBackgroundMode,
+        productName: suiteProductName,
+        sellingPoints: suiteSellingPoints,
+        style: suiteStyle,
+        prompts: suitePrompts,
+      });
+      setProductSuites((current) => [suite, ...current.filter((item) => item.id !== suite.id)]);
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "商品套图任务创建失败。");
+    } finally {
+      setSuiteSubmitting(false);
+    }
+  }
+
+  async function retryProductSuiteSlot(suiteId: string, slot: ProductSuiteSlot) {
+    try {
+      const next = await retryProductSuiteItem(suiteId, slot);
+      setProductSuites((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "单张图片重试失败。");
+    }
+  }
+
+  async function saveProductSuitePrompt(suiteId: string, slot: ProductSuiteSlot, prompt: string) {
+    try {
+      const next = await updateProductSuitePrompts(suiteId, { [slot]: prompt });
+      setProductSuites((current) => current.map((item) => item.id === next.id ? next : item));
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "文案保存失败。");
+    }
+  }
+
+  function addVideoDraft() {
+    if (videoDrafts.length >= MAX_TASKS) return;
+    setVideoDrafts((current) => [...current, createVideoDraft()]);
+  }
+
+  function removeVideoDraft(id: string) {
+    setVideoDrafts((current) => current.length === 1 ? current : current.filter((draft) => draft.id !== id));
+  }
+
+  async function submitVideoDraft(draft: VideoDraft) {
+    if (!draft.startImage) { updateVideoDraft(draft.id, { error: "请先上传首帧图片。" }); return; }
+    if (videoNeedsPrompt(draft.modelId) && !draft.prompt.trim()) { updateVideoDraft(draft.id, { error: "请先输入运动提示词。" }); return; }
+    if (draft.endImage && !supportsVideoEndFrame(draft.modelId)) { updateVideoDraft(draft.id, { error: "当前模型不支持尾帧图片。" }); return; }
+    if (isMotionControlVideo(draft.modelId) && !draft.motionVideo) { updateVideoDraft(draft.id, { error: "动作控制模型需要上传动作参考视频。" }); return; }
+    updateVideoDraft(draft.id, { status: "submitting", error: "" });
+    try {
+      const [startUrl, endUrl] = await Promise.all([
+        uploadVideoMedia(draft.startImage, "image", draft.modelId),
+        draft.endImage ? uploadVideoMedia(draft.endImage, "image", draft.modelId) : Promise.resolve(""),
+      ]);
+      const motionUrl = draft.motionVideo ? await uploadVideoMedia(draft.motionVideo, "video", draft.modelId) : undefined;
+      const referenceImages = orderedVideoReferences(startUrl, endUrl, draft.modelId).map((item, index) => ({ ...item, fileName: index === 0 ? draft.startImage?.fileName : draft.endImage?.fileName }));
+      const task = await createVideoTask({ modelId: draft.modelId, prompt: draft.prompt, referenceImages, ...(motionUrl ? { motionVideo: { url: motionUrl, fileName: draft.motionVideo?.fileName }, characterOrientation: "image", keepOriginalSound: true } : {}), duration: 5, ...(draft.modelId.startsWith("seedance-") ? { aspectRatio: "9:16", resolution: draft.modelId === "seedance-2-mini-image-to-video" ? "720p" : "480p", generateAudio: true } : {}) });
+      updateVideoTask(task);
+      updateVideoDraft(draft.id, { status: "idle", prompt: "", startImage: null, endImage: null, motionVideo: null, error: "" });
+    } catch (cause) {
+      updateVideoDraft(draft.id, { status: "idle", error: cause instanceof Error ? cause.message : "视频任务创建失败。" });
+    }
+  }
+
+  async function submitCutoutTask() {
+    if (!cutoutImage) { setCutoutError("请先上传产品图片。"); return; }
+    setIsCreatingCutout(true);
+    setCutoutError("");
+    try {
+      const task = await createCutoutTask({
+        mode: "product-cutout",
+        prompt: cutoutPrompt.trim() || "main product",
+        backgroundMode: cutoutBackground,
+        autocrop: cutoutAutocrop,
+        forceBackgroundRemoval: cutoutEdgeRefinement,
+      }, cutoutImage);
+      setCutoutTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+      setCutoutImage(null);
+    } catch (cause) {
+      setCutoutError(cause instanceof Error ? cause.message : "抠图任务创建失败。");
+    } finally {
+      setIsCreatingCutout(false);
+    }
   }
 
   function readVideoImage(file: File, guard: LatestRequestGuard, setImage: (media: VideoMedia) => void) {
@@ -515,6 +707,31 @@ function App() {
       ),
     );
     setBulkError("");
+  }
+
+  function applyGlobalSettingsToTasks() {
+    setTasks((current) => current.map((task) => task.status === "running" ? task : {
+      ...task,
+      provider,
+      nanoModel,
+      aspectRatio,
+      count,
+      resolution,
+      quality,
+      status: "idle",
+      results: [],
+      error: "",
+    }));
+    setBulkError("");
+  }
+
+  function applyVideoGlobalSettings() {
+    setVideoDrafts((current) => current.map((draft) => ({
+      ...draft,
+      modelId: videoModel,
+      endImage: supportsVideoEndFrame(videoModel) ? draft.endImage : null,
+      error: "",
+    })));
   }
 
   function removeTask(taskId: string) {
@@ -753,26 +970,138 @@ function App() {
     );
   }
 
+  function renderPrintExtractionPanel() {
+    return (
+      <section className="panel print-create-panel">
+        <div className="batch-heading">
+          <div>
+            <p className="eyebrow">Print Extract</p>
+            <h2>印花提取</h2>
+            <span>从服装图片中提取中央印花，生成居中的高清图案素材。</span>
+          </div>
+          <span className="print-model-badge">nanobanana · 2K · 1:1</span>
+        </div>
+        <div className="print-create-grid">
+          <div>
+            <label className="field">
+              <span>服装图片链接</span>
+              <input
+                value={printImageUrl}
+                onChange={(event) => {
+                  setPrintImageUrl(event.target.value);
+                  setPrintError("");
+                }}
+                placeholder="粘贴可公开访问的图片链接，例如 https://...jpg"
+                type="url"
+              />
+            </label>
+            <div className="print-link-actions">
+              <button className="primary" type="button" onClick={() => void createPrintTaskFromUrl()} disabled={isImportingPrint || remainingSlots === 0}>
+                {isImportingPrint ? <Loader2 className="spin" size={16} /> : <Scissors size={16} />}
+                创建提取任务
+              </button>
+              <button className="secondary" type="button" onClick={() => printFileInputRef.current?.click()} disabled={remainingSlots === 0}>
+                <ImagePlus size={16} />
+                上传服装图
+              </button>
+              <input
+                ref={printFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(event) => {
+                  if (event.target.files) void createPrintTasksFromFiles(event.target.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </div>
+            <p className="print-help">支持一次上传多张，每张图片创建一个任务，最多 {MAX_TASKS} 个任务。</p>
+            {printError && <div className="inline-error">{printError}</div>}
+          </div>
+          <div className="print-guidance-card">
+            <strong>处理说明</strong>
+            <span>自动去除衣服、褶皱、背景和光线，只保留印花内容。</span>
+            <span>结果会进入下方图片任务队列，可继续下载或重试。</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderProductSuitePanel() {
+    return (
+      <section className="panel product-suite-panel">
+        <div className="batch-heading">
+          <div><p className="eyebrow">Product Detail Suite</p><h2>商品详情页主图套图</h2><span>上传一张商品图，自动抠图并生成 5 张统一风格的详情页主图。</span></div>
+          <span className="suite-spec-badge">4:5 · 2K · 5 张</span>
+        </div>
+        <div className="product-suite-form-grid">
+          <div className="suite-upload-stack">
+            <div className="dropzone suite-upload-zone">
+              {suiteImage ? <img className="suite-source-preview" src={suiteImage.dataUrl} alt="商品原图" /> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>必填，支持 JPG、PNG、WebP</span></>}
+              <button className="secondary" type="button" onClick={() => suiteImageInputRef.current?.click()}>{suiteImage ? "替换商品图" : "选择商品图"}</button>
+              {suiteImage && <button className="ghost" type="button" onClick={() => setSuiteImage(null)}><Trash2 size={16} />移除</button>}
+              <input ref={suiteImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteImage).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+            </div>
+            <div className="suite-background-card">
+              <div className="suite-section-heading"><strong>统一背景</strong><span>默认纯白，也可上传自定义背景</span></div>
+              <div className="background-choice" role="radiogroup" aria-label="套图统一背景">
+                <button type="button" className={suiteBackgroundMode === "white" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("white")}><span className="white-preview" />纯白背景</button>
+                <button type="button" className={suiteBackgroundMode === "custom" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("custom")}><span className="checker-preview" />自定义背景</button>
+              </div>
+              {suiteBackground && <div className="suite-background-preview"><img src={suiteBackground.dataUrl} alt="自定义背景" /><button className="ghost" type="button" onClick={() => setSuiteBackground(null)}>移除背景</button></div>}
+              <button className="secondary" type="button" onClick={() => suiteBackgroundInputRef.current?.click()}>{suiteBackground ? "替换背景图" : "上传背景图"}</button>
+              <input ref={suiteBackgroundInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteBackground).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+            </div>
+          </div>
+          <div className="suite-options-column">
+            <div className="suite-option-grid">
+              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as "kling" | "nanobanana")}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option></select></label>
+              <label className="field"><span>模特性别</span><select value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="field"><span>模特体型</span><select value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            </div>
+            <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
+            <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
+            <label className="field"><span>整体视觉风格</span><input value={suiteStyle} onChange={(event) => setSuiteStyle(event.target.value)} /></label>
+            <div className="suite-submit-row"><div><strong>自动抠图 + 5 张生成</strong><span>每张图片独立处理，失败后可单张重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
+          </div>
+        </div>
+        {suiteError && <div className="error-box">{suiteError}</div>}
+      </section>
+    );
+  }
+
+  function renderProductSuiteQueue() {
+    return <section className="product-suite-queue">
+      <div className="mode-banner"><div><p className="eyebrow">Suite Queue</p><h2>商品套图任务</h2></div><span>固定 5 张，统一背景和模型；每张文案可独立编辑。</span></div>
+      {productSuites.length === 0 ? <div className="panel empty-state task-empty-state"><ImagePlus size={30} /><strong>还没有商品套图任务</strong><span>上传商品图并开始生成后，结果会显示在这里。</span></div> : <div className="product-suite-list">{productSuites.map((suite) => <article className="panel product-suite-task-card" key={suite.id}>
+        <div className="suite-task-heading"><div><p className="eyebrow">Product Detail Suite</p><h3>{suite.input.productName || "未命名商品"}</h3><span className={`status-pill status-${suite.status === "done" ? "done" : suite.status === "error" ? "error" : suite.status === "partial" ? "error" : "running"}`}>{suite.status === "queued" ? "排队中" : suite.status === "running" ? "生成中" : suite.status === "partial" ? "部分完成" : suite.status === "done" ? "已完成" : "失败"}</span></div>{suite.items.some((item) => item.resultUrl) && <a className="secondary" href={productSuiteZipUrl(suite.id)}><Download size={16} />下载整套 ZIP</a>}</div>
+        <div className="product-suite-item-grid">{productSuiteSlots.map((definition) => { const item = suite.items.find((candidate) => candidate.slot === definition.slot); if (!item) return null; return <article className="product-suite-item-card" key={item.slot}><div className="suite-item-heading"><div><p className="eyebrow">{definition.eyebrow}</p><h4>{definition.label}</h4></div><span className={`status-pill status-${item.status === "done" ? "done" : item.status === "error" ? "error" : "running"}`}>{item.status === "queued" ? "排队中" : item.status === "running" ? "生成中" : item.status === "done" ? "已完成" : "失败"}</span></div><textarea value={item.prompt} onChange={(event) => setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt: event.target.value } : currentItem) } : currentSuite))} onBlur={(event) => void saveProductSuitePrompt(suite.id, item.slot, event.target.value)} rows={4} /><div className="suite-item-actions"><button className="ghost" type="button" onClick={() => { const prompt = item.defaultPrompt || item.prompt; setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt } : currentItem) } : currentSuite)); void saveProductSuitePrompt(suite.id, item.slot, prompt); }}><RefreshCcw size={15} />恢复默认文案</button>{item.resultUrl && <a className="secondary" href={item.resultUrl} target="_blank" rel="noreferrer"><Download size={15} />下载图片</a>}{item.status === "error" && <button className="ghost" type="button" onClick={() => void retryProductSuiteSlot(suite.id, item.slot)}><RefreshCcw size={15} />单张重试</button>}</div>{item.resultUrl ? <img className="suite-result-preview" src={item.resultUrl} alt={definition.label} /> : <div className="empty-state suite-result-empty"><Loader2 className={item.status === "running" || item.status === "queued" ? "spin" : ""} size={24} /><span>{item.status === "error" ? item.error || "生成失败" : item.status === "queued" ? "等待共享执行槽位" : "正在生成"}</span></div>}</article>; })}</div>
+      </article>)}</div>}
+    </section>;
+  }
+
+  const creationTitle = creationKind === "image" ? "图片创作" : creationKind === "video" ? "视频创作" : creationKind === "print" ? "印花提取" : creationKind === "suite" ? "商品套图" : "产品抠图";
+
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">AI Image Workbench</p>
-          <h1>AI 图片生成工作台</h1>
-        </div>
-        <div className="status-strip">
-          <span>{providerLabels[provider]}</span>
-          <span>{tasks.length}/{MAX_TASKS} 个任务</span>
-          <span>{resultCount} 张结果图</span>
-          <span>图片生成中 {activeImageCount}</span>
-          <span>视频进行中 {activeVideoCount}</span>
-        </div>
+      <header className="workbench-topbar">
+        <nav className="workbench-nav" aria-label="创作类型">
+          <button className={creationKind === "image" ? "active" : ""} aria-pressed={creationKind === "image"} onClick={() => setCreationKind("image")} type="button">图片创作</button>
+          <button className={creationKind === "video" ? "active" : ""} aria-pressed={creationKind === "video"} onClick={() => setCreationKind("video")} type="button">视频创作</button>
+          <button className={creationKind === "cutout" ? "active" : ""} aria-pressed={creationKind === "cutout"} onClick={() => setCreationKind("cutout")} type="button">产品抠图</button>
+          <button className={creationKind === "print" ? "active" : ""} aria-pressed={creationKind === "print"} onClick={() => setCreationKind("print")} type="button">印花提取</button>
+          <button className={creationKind === "suite" ? "active" : ""} aria-pressed={creationKind === "suite"} onClick={() => setCreationKind("suite")} type="button">商品套图</button>
+        </nav>
+        <div className="workbench-top-actions"><span>使用指南</span><span className="balance-badge">余额&nbsp; 1,250</span><span className="account-orb">W</span></div>
       </header>
-
-      <div className="creation-switch segmented compact-segmented" aria-label="创作类型">
-        <button className={creationKind === "image" ? "active" : ""} aria-pressed={creationKind === "image"} onClick={() => setCreationKind("image")} type="button">图片任务</button>
-        <button className={creationKind === "video" ? "active" : ""} aria-pressed={creationKind === "video"} onClick={() => setCreationKind("video")} type="button"><Video size={16} />视频任务</button>
-      </div>
+      <div className="workbench-layout">
+        <div className="workbench-main">
+          <header className="topbar page-heading">
+            <div><p className="eyebrow">AI Workbench</p><h1>{creationTitle}</h1><span className="page-subtitle">多任务并行创作，结果统一管理</span></div>
+            <div className="status-strip"><span>{tasks.length + videoTasks.length + cutoutTasks.length}/{MAX_TASKS} 个任务</span><span>{resultCount} 张结果图</span><span>运行中 {activeImageCount + activeVideoCount}</span></div>
+          </header>
 
       {creationKind === "image" ? <section className="panel batch-panel">
         <div className="batch-heading">
@@ -781,9 +1110,9 @@ function App() {
             <h2>批量任务创建</h2>
           </div>
           <div className="batch-actions">
-            <button className="primary" type="button" onClick={applyBulkToTasks}>
+            <button className="primary" type="button" onClick={applyGlobalSettingsToTasks}>
               <Wand2 size={16} />
-              批量添加
+              应用到所有任务卡
             </button>
             <button className="secondary" type="button" onClick={addTask} disabled={remainingSlots === 0}>
               <Plus size={16} />
@@ -819,68 +1148,10 @@ function App() {
                 rows={5}
               />
             </label>
-            <div className="print-extraction-box">
-              <div className="print-extraction-heading">
-                <div>
-                  <p className="eyebrow">Print Extract</p>
-                  <h3>服装印花提取</h3>
-                </div>
-                <span>nanobanana · 2K · 1:1</span>
-              </div>
-              <p>上传衣服正面图，系统会提取中间印花并输出 2K 高清素材。</p>
-              <div className="print-link-row">
-                <input
-                  value={printImageUrl}
-                  onChange={(event) => {
-                    setPrintImageUrl(event.target.value);
-                    setPrintError("");
-                  }}
-                  placeholder="粘贴服装图片链接，例如 https://...jpg"
-                  type="url"
-                />
-                <button className="secondary" type="button" onClick={() => void createPrintTaskFromUrl()} disabled={isImportingPrint || remainingSlots === 0}>
-                  {isImportingPrint ? <Loader2 className="spin" size={16} /> : <Scissors size={16} />}
-                  创建提取任务
-                </button>
-              </div>
-              <div className="print-action-row">
-                <button className="ghost print-upload-button" type="button" onClick={() => printFileInputRef.current?.click()} disabled={remainingSlots === 0}>
-                  <ImagePlus size={16} />
-                  上传服装图
-                </button>
-                <span>可一次上传多张，每张图创建一个 task，最多 {MAX_TASKS} 个。</span>
-              </div>
-              <input
-                ref={printFileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={(event) => {
-                  if (event.target.files) void createPrintTasksFromFiles(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-              {printError && <div className="inline-error">{printError}</div>}
-            </div>
           </div>
 
           <div className="batch-controls">
-            <div className="model-selector-block">
-              <p className="eyebrow">Model</p>
-              <div className="segmented compact-segmented" aria-label="选择模型">
-                {(["nanobanana", "image2", "grok", "kling"] as ProviderId[]).map((item) => (
-                  <button
-                    className={provider === item ? "active" : ""}
-                    key={item}
-                    onClick={() => changeBatchProvider(item)}
-                    type="button"
-                  >
-                    {providerLabels[item]}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <label className="field global-model-field"><span>模型</span><select value={`${provider}:${nanoModel}`} onChange={(event) => { const [nextProvider, nextModel] = event.target.value.split(":") as [ProviderId, NanoModelId]; changeBatchProvider(nextProvider); if (nextProvider !== "image2") changeBatchNanoModel(nextModel); }}><option value="image2:gpt-image-2">Image 2</option>{(["nanobanana", "grok", "kling"] as ProviderId[]).flatMap((item) => imageModelsForProvider(item).map((model) => <option key={`${item}:${model.id}`} value={`${item}:${model.id}`}>{model.label}</option>))}</select></label>
 
             {provider !== "image2" && (
               <label className="field">
@@ -964,44 +1235,42 @@ function App() {
         </div>
 
         <div className="batch-foot">
-          <span>先添加任务，再用“批量添加”把顶部文案和参数同步到所有任务。剩余可添加 {remainingSlots} 个，最多 {MAX_TASKS} 个。</span>
+          <span>全局设置可应用到所有待生成任务卡；每张卡仍可单独覆盖模型、提示词和参考图。</span>
           {bulkError && <strong>{bulkError}</strong>}
         </div>
-      </section> : <section className="panel video-create-panel">
-        <div className="batch-heading"><div><p className="eyebrow">Video creation</p><h2>视频任务创建</h2><span>图片与视频任务独立创建、共享服务器并发队列。</span></div><button className="primary" type="button" disabled={isCreatingVideo} onClick={() => void submitVideoTask()}>{isCreatingVideo ? <Loader2 className="spin" size={18} /> : <Video size={18} />}{isCreatingVideo ? "正在提交..." : "创建视频任务"}</button></div>
-        <div className="video-create-grid">
-          <div className="video-fields">
-            <label className="field"><span>视频模型</span><select value={videoModel} onChange={(event) => { const next = event.target.value as VideoModelId; videoEndImageReadGuardRef.current.cancel(); setVideoModel(next); if (!supportsVideoEndFrame(next)) setVideoEndImage(null); setVideoDuration(videoDurationOptions(next)[0]); setVideoResolution(videoResolutionOptions(next)[0] ?? "720p"); setVideoError(""); }}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini · 图生视频 · 低成本试片</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast · 图生视频 · 快速成片</option><option value="seedance-2-image-to-video">Seedance 2.0 · 图生视频 · 正式成片</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard · 图生视频</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro · 图生视频 · 高质量成片</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5 · 图生视频</option></select></label>
-            <label className="field"><span>{isMotionControlVideo(videoModel) ? "可选动作提示词" : videoNeedsPrompt(videoModel) ? "运动提示词" : "可选运动提示词"}</span><textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} placeholder="描述动作、镜头、节奏和氛围..." rows={4} /></label>
-            {isMotionControlVideo(videoModel) ? <div className="param-grid video-param-grid"><label className="field"><span>角色方向</span><select value={videoOrientation} onChange={(event) => setVideoOrientation(event.target.value as "image" | "video")}><option value="image">以人物图片方向为准</option><option value="video">以动作视频方向为准</option></select></label><label className="field"><span>保留参考音频</span><select value={keepOriginalSound ? "yes" : "no"} onChange={(event) => setKeepOriginalSound(event.target.value === "yes")}><option value="yes">保留</option><option value="no">不保留</option></select></label></div> : <div className="param-grid video-param-grid"><label className="field"><span>时长</span><select value={videoDuration} onChange={(event) => setVideoDuration(Number(event.target.value))}>{videoDurationOptions(videoModel).map((item) => <option key={item} value={item}>{item} 秒</option>)}</select></label>{videoSupportsAspectRatio(videoModel) && <label className="field"><span>画面比例</span><select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}>{aspectOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>}{videoResolutionOptions(videoModel).length > 0 && <label className="field"><span>分辨率</span><select value={videoResolution} onChange={(event) => setVideoResolution(event.target.value)}>{videoResolutionOptions(videoModel).map((item) => <option key={item} value={item}>{item === "4k" ? "4K" : item}</option>)}</select></label>}{videoSupportsAudio(videoModel) && <label className="field"><span>生成音频</span><select value={videoAudio ? "yes" : "no"} onChange={(event) => setVideoAudio(event.target.value === "yes")}><option value="yes">生成</option><option value="no">关闭</option></select></label>}</div>}
-          </div>
-          <div className="video-media-grid">
-            <div className={`video-frame-slots ${videoAllowsEndFrame ? "with-end-frame" : ""}`}>
-              <div className="video-frame-slot dropzone compact-dropzone">
-                <ImagePlus size={24} />
-                <strong>首帧图片（必填）</strong>
-                {videoStartImage ? <img className="video-reference-preview" src={videoStartImage.dataUrl} alt="视频首帧图片" /> : <span>可上传图片或从已有图片结果带入</span>}
-                <div className="video-frame-actions">
-                  <button className="secondary" type="button" onClick={() => videoStartImageInputRef.current?.click()}>{videoStartImage ? "替换图片" : "选择图片"}</button>
-                  {videoStartImage && <button className="ghost" type="button" onClick={() => { videoStartImageReadGuardRef.current.cancel(); setVideoStartImage(null); }}><Trash2 size={16} />移除</button>}
-                </div>
-                <input ref={videoStartImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) readVideoImage(file, videoStartImageReadGuardRef.current, setVideoStartImage); event.currentTarget.value = ""; }} />
-              </div>
-              {videoAllowsEndFrame && <div className="video-frame-slot dropzone compact-dropzone">
-                <ImagePlus size={24} />
-                <strong>尾帧图片（可选）</strong>
-                {videoEndImage ? <img className="video-reference-preview" src={videoEndImage.dataUrl} alt="视频尾帧图片" /> : <span>可上传图片作为视频结束画面</span>}
-                <div className="video-frame-actions">
-                  <button className="secondary" type="button" onClick={() => videoEndImageInputRef.current?.click()}>{videoEndImage ? "替换图片" : "选择图片"}</button>
-                  {videoEndImage && <button className="ghost" type="button" onClick={() => { videoEndImageReadGuardRef.current.cancel(); setVideoEndImage(null); }}><Trash2 size={16} />移除</button>}
-                </div>
-                <input ref={videoEndImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) readVideoImage(file, videoEndImageReadGuardRef.current, setVideoEndImage); event.currentTarget.value = ""; }} />
-              </div>}
+      </section> : creationKind === "video" ? <section className="panel video-create-panel">
+        <div className="batch-heading"><div><p className="eyebrow">Video creation</p><h2>视频创作</h2><span>每张卡独立配置；图片和视频任务共享服务器并发队列。</span></div><button className="secondary" type="button" onClick={addVideoDraft} disabled={videoDrafts.length >= MAX_TASKS}><Plus size={16} />添加视频任务</button></div>
+        <div className="video-global-settings"><label className="field"><span>模型</span><select value={videoModel} onChange={(event) => setVideoModel(event.target.value as VideoModelId)}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast</option><option value="seedance-2-image-to-video">Seedance 2.0</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5</option></select></label><label className="field"><span>视频比例</span><select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label><label className="field"><span>时长</span><select value={videoDuration} onChange={(event) => setVideoDuration(Number(event.target.value))}>{videoDurationOptions(videoModel).map((item) => <option key={item} value={item}>{item} 秒</option>)}</select></label><label className="field"><span>分辨率</span><select value={videoResolution} onChange={(event) => setVideoResolution(event.target.value)}>{videoResolutionOptions(videoModel).map((item) => <option key={item} value={item}>{item === "4k" ? "4K" : item}</option>)}</select></label><label className="toggle-field audio-toggle"><input type="checkbox" checked={videoAudio} onChange={(event) => setVideoAudio(event.target.checked)} /><span><strong>音频</strong><small>生成同步音频</small></span></label><button className="primary apply-video-button" type="button" onClick={applyVideoGlobalSettings}>应用到所有视频任务卡</button></div>
+        <div className="video-draft-list">{videoDrafts.map((draft, index) => <article className="video-draft-card" key={draft.id}>
+          <div className="task-heading"><div><p className="eyebrow">Video task {index + 1}</p><h3>视频任务卡</h3></div><button className="icon-button" type="button" title="删除任务" onClick={() => removeVideoDraft(draft.id)} disabled={videoDrafts.length === 1}><Trash2 size={16} /></button></div>
+          <div className="video-draft-fields"><label className="field"><span>视频模型</span><select value={draft.modelId} onChange={(event) => updateVideoDraft(draft.id, { modelId: event.target.value as VideoModelId, endImage: null, error: "" })}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini · 图生视频</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast · 图生视频</option><option value="seedance-2-image-to-video">Seedance 2.0 · 图生视频</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard · 图生视频</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro · 图生视频</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5 · 图生视频</option></select></label><label className="field"><span>{videoNeedsPrompt(draft.modelId) ? "运动提示词" : "可选运动提示词"}</span><textarea value={draft.prompt} onChange={(event) => updateVideoDraft(draft.id, { prompt: event.target.value, error: "" })} placeholder="描述动作、镜头、节奏和氛围..." rows={4} /></label></div>
+          <div className={`video-frame-slots ${supportsVideoEndFrame(draft.modelId) ? "with-end-frame" : ""}`}><div className="video-frame-slot dropzone compact-dropzone"><ImagePlus size={22} /><strong>首帧图片（必填）</strong>{draft.startImage && <img className="video-reference-preview" src={draft.startImage.dataUrl} alt="视频首帧图片" />}<span>{draft.startImage?.fileName ?? "一张图片"}</span><button className="secondary" type="button" onClick={() => videoDraftInputRefs.current[`${draft.id}-start`]?.click()}>{draft.startImage ? "替换首帧" : "选择首帧"}</button><input ref={(element) => { videoDraftInputRefs.current[`${draft.id}-start`] = element; }} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then((media) => updateVideoDraft(draft.id, { startImage: media, error: "" })); event.currentTarget.value = ""; }} /></div>{supportsVideoEndFrame(draft.modelId) && <div className="video-frame-slot dropzone compact-dropzone"><ImagePlus size={22} /><strong>尾帧图片（可选，最多 1 张）</strong>{draft.endImage && <img className="video-reference-preview" src={draft.endImage.dataUrl} alt="视频尾帧图片" />}<span>{draft.endImage?.fileName ?? "可选一张结束画面"}</span><button className="secondary" type="button" onClick={() => videoDraftInputRefs.current[`${draft.id}-end`]?.click()}>{draft.endImage ? "替换尾帧" : "选择尾帧"}</button><input ref={(element) => { videoDraftInputRefs.current[`${draft.id}-end`] = element; }} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then((media) => updateVideoDraft(draft.id, { endImage: media, error: "" })); event.currentTarget.value = ""; }} /></div>}</div>
+          {isMotionControlVideo(draft.modelId) && <div className="dropzone compact-dropzone motion-draft-upload"><Video size={22} /><strong>动作参考视频（必填）</strong><span>{draft.motionVideo?.fileName ?? "MP4、WebM 或 MOV"}</span><button className="secondary" type="button" onClick={() => videoDraftInputRefs.current[`${draft.id}-motion`]?.click()}>{draft.motionVideo ? "替换动作视频" : "选择动作视频"}</button><input ref={(element) => { videoDraftInputRefs.current[`${draft.id}-motion`] = element; }} type="file" accept="video/mp4,video/webm,video/quicktime" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then((media) => updateVideoDraft(draft.id, { motionVideo: media, error: "" })); event.currentTarget.value = ""; }} /></div>}
+          {draft.error && <div className="error-box">{draft.error}</div>}<div className="task-actions"><button className="primary" type="button" disabled={draft.status === "submitting"} onClick={() => void submitVideoDraft(draft)}>{draft.status === "submitting" ? <Loader2 className="spin" size={18} /> : <Video size={18} />}{draft.status === "submitting" ? "提交中..." : "创建此视频任务"}</button></div>
+        </article>)}</div>
+      </section> : creationKind === "print" ? renderPrintExtractionPanel() : creationKind === "suite" ? renderProductSuitePanel() : <section className="panel cutout-create-panel">
+        <div className="batch-heading">
+          <div><p className="eyebrow">Product cutout</p><h2>产品抠图</h2><span>把产品从原图中提取出来，输出透明底或纯白底素材。</span></div>
+          <button className="primary" type="button" disabled={isCreatingCutout} onClick={() => void submitCutoutTask()}>{isCreatingCutout ? <Loader2 className="spin" size={18} /> : <Scissors size={18} />}{isCreatingCutout ? "正在提交..." : "创建抠图任务"}</button>
+        </div>
+        <div className="cutout-create-grid">
+          <div className="cutout-upload-column">
+            <div className="dropzone cutout-dropzone">
+              {cutoutImage ? <img className="cutout-source-preview" src={cutoutImage.dataUrl} alt="产品原图" /> : <><Scissors size={30} /><strong>上传产品图</strong><span>支持单张 JPG、PNG、WebP</span></>}
+              <button className="secondary" type="button" onClick={() => cutoutFileInputRef.current?.click()}>{cutoutImage ? "替换图片" : "选择产品图"}</button>
+              {cutoutImage && <button className="ghost" type="button" onClick={() => setCutoutImage(null)}><Trash2 size={16} />移除</button>}
+              <input ref={cutoutFileInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readImages([file]).then((images) => setCutoutImage(images[0] ?? null)).catch(() => setCutoutError("图片读取失败。")); event.currentTarget.value = ""; }} />
             </div>
-            {isMotionControlVideo(videoModel) && <div className="dropzone compact-dropzone"><Video size={24} /><strong>动作参考视频（必填）</strong><span>{motionVideo?.fileName ?? "MP4、WebM 或 MOV"}</span><button className="secondary" type="button" onClick={() => motionVideoInputRef.current?.click()}>选择动作视频</button><input ref={motionVideoInputRef} type="file" accept="video/mp4,video/webm,video/quicktime" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then(setMotionVideo).catch(() => setVideoError("视频读取失败。")); event.currentTarget.value = ""; }} /></div>}
+          </div>
+          <div className="cutout-options">
+            <label className="field"><span>产品描述</span><input value={cutoutPrompt} onChange={(event) => setCutoutPrompt(event.target.value)} placeholder="例如：白色运动鞋、主产品" /></label>
+            <div className="field"><span>输出背景</span><div className="background-choice" role="radiogroup" aria-label="输出背景"><button type="button" className={cutoutBackground === "transparent" ? "selected" : ""} onClick={() => setCutoutBackground("transparent")}><span className="checker-preview" />透明底</button><button type="button" className={cutoutBackground === "white" ? "selected" : ""} onClick={() => setCutoutBackground("white")}><span className="white-preview" />白底</button></div></div>
+            <label className="toggle-field"><input type="checkbox" checked={cutoutAutocrop} onChange={(event) => setCutoutAutocrop(event.target.checked)} /><span><strong>自动裁切画布</strong><small>按产品边界收紧输出画布</small></span></label>
+            <label className="toggle-field"><input type="checkbox" checked={cutoutEdgeRefinement} onChange={(event) => setCutoutEdgeRefinement(event.target.checked)} /><span><strong>边缘优化</strong><small>优先处理产品边缘和半透明区域</small></span></label>
+            <div className="cutout-price"><strong>预计单张：$0.020</strong><span>使用 Bria 产品抠图模型，结果会进入下方任务队列。</span></div>
           </div>
         </div>
-        {videoError && <div className="error-box">{videoError}</div>}
+        {cutoutError && <div className="error-box">{cutoutError}</div>}
       </section>}
 
       <section className="task-workspace">
@@ -1304,6 +1573,13 @@ function App() {
         <div className="mode-banner"><div><p className="eyebrow">Concurrent queue</p><h2>视频任务队列</h2></div><div className="task-filter" role="tablist" aria-label="任务类型筛选"><button className={taskFilter === "all" ? "active" : ""} onClick={() => setTaskFilter("all")} type="button">全部任务</button><button className={taskFilter === "image" ? "active" : ""} onClick={() => setTaskFilter("image")} type="button">图片任务</button><button className={taskFilter === "video" ? "active" : ""} onClick={() => setTaskFilter("video")} type="button">视频任务</button></div></div>
         {taskFilter !== "image" && (videoTasks.length === 0 ? <div className="panel empty-state task-empty-state"><Video size={30} /><strong>还没有视频任务</strong><span>创建后会在这里显示进度、预览和下载。</span></div> : <div className="video-task-list">{videoTasks.map((task) => <article className="panel video-task-card" key={task.id}><div><p className="eyebrow">Video task</p><h3>{videoModelLabels[task.input.modelId]}</h3><span className={`status-pill status-${task.status === "done" ? "done" : task.status === "error" || task.status === "cancelled" ? "error" : "running"}`}>{task.status === "queued" ? "排队中" : task.status === "running" ? "生成中" : task.status === "done" ? "已完成" : task.status === "cancelled" ? "已取消" : task.status === "cancel_requested" ? "取消处理中" : "失败"}</span><p className="muted">{task.input.prompt || "未填写动作提示词"}</p>{task.error && <div className="error-box">{task.error}</div>}<div className="task-actions">{task.status === "error" && <button className="secondary" type="button" onClick={() => void retryVideoTask(task.id).then(updateVideoTask).catch((error) => setVideoError(error.message))}><RefreshCcw size={16} />重试</button>}{(task.status === "queued" || task.status === "running") && <button className="ghost danger-ghost" type="button" onClick={() => void cancelVideoTask(task.id).then(updateVideoTask).catch((error) => setVideoError(error.message))}>取消</button>}</div></div><div className="video-output">{task.results[0]?.url ? <><video controls preload="metadata" src={task.results[0].url} /><a className="secondary" href={task.results[0].url} target="_blank" rel="noreferrer"><Download size={16} />下载视频</a></> : <div className="empty-state task-output-empty">{task.status === "running" || task.status === "queued" ? <Loader2 className="spin" size={28} /> : <Video size={28} />}<strong>{task.status === "queued" ? "等待共享执行槽位" : task.status === "running" ? "正在生成视频" : "结果会显示在这里"}</strong></div>}</div></article>)}</div>)}
       </section>
+      {creationKind === "cutout" && <section className="video-queue-section cutout-queue-section">
+        <div className="mode-banner"><div><p className="eyebrow">Cutout queue</p><h2>抠图任务队列</h2></div><span>每张产品图独立处理，可与图片和视频任务同时运行。</span></div>
+        {cutoutTasks.length === 0 ? <div className="panel empty-state task-empty-state"><Scissors size={30} /><strong>还没有抠图任务</strong><span>上传产品图并创建任务后，结果会显示在这里。</span></div> : <div className="video-task-list">{cutoutTasks.map((task) => <article className="panel video-task-card cutout-task-card" key={task.id}><div><p className="eyebrow">Product cutout</p><h3>{task.input.backgroundMode === "white" ? "白底产品图" : "透明底产品图"}</h3><span className={`status-pill status-${task.status === "done" ? "done" : task.status === "error" ? "error" : "running"}`}>{task.status === "queued" ? "排队中" : task.status === "running" ? "抠图中" : task.status === "done" ? "已完成" : "失败"}</span><p className="muted">{task.input.prompt}</p>{task.error && <div className="error-box">{task.error}</div>}</div><div className={`cutout-output ${task.input.backgroundMode === "transparent" ? "checkerboard" : "whiteboard"}`}>{task.results[0]?.url ? <><img src={task.results[0].url} alt="抠图结果" /><a className="secondary" href={task.results[0].url} target="_blank" rel="noreferrer"><Download size={16} />下载图片</a></> : <div className="empty-state task-output-empty"><Scissors size={28} /><strong>{task.status === "queued" ? "等待共享执行槽位" : task.status === "running" ? "正在处理产品边缘" : "结果会显示在这里"}</strong></div>}</div></article>)}</div>}
+      </section>}
+      {creationKind === "suite" && renderProductSuiteQueue()}
+        </div>
+      </div>
     </main>
   );
 }
