@@ -14,16 +14,23 @@ import {
   stageImagesLocally,
   uploadImagesInParallel,
   validateReferenceImageCount,
+  validateWaveSpeedImageSize,
+  publicProductSuite,
 } from "./server/imageUploads.mjs";
 import { TaskStore } from "./server/taskStore.mjs";
 import { validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
 import { envKeyForModelRequest, grokImageModelInfo, grokPayloadFor, isGrokImageRequest, normalizeGrokImageInput, validateGrokImageInput } from "./server/grokModels.mjs";
 import { isKlingImageRequest, klingImageModelInfo, klingImagePayloadFor, normalizeKlingImageInput, requiresDedicatedKlingImageKey, validateKlingImageInput } from "./server/klingImageModels.mjs";
+import { cutoutEndpointFor, cutoutEnvKey, cutoutPayloadFor, isCutoutRequest, normalizeCutoutInput, validateCutoutInput } from "./server/cutoutModels.mjs";
 import { UsageLedger } from "./server/usageLedger.mjs";
 import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
-import { summarizeUsage } from "./server/usageStats.mjs";
+import { normalizeUsageRange, summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
 import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
+import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
+import { createZipArchive } from "./server/productSuiteArchive.mjs";
+import { fetchWithRetry, isTransientFetchError } from "./server/wavespeedTransport.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -34,6 +41,7 @@ const usersFile = resolve("data", "users.json");
 const tasksFile = resolve("data", "tasks.json");
 const stagedUploadsFile = resolve("data", "staged-uploads.json");
 const usageLedgerFile = resolve("data", "usage-ledger.json");
+const productSuitesFile = resolve("data", "product-suites.json");
 const stagedImagesRoot = resolve("data", "staged-images");
 const maxReferenceImages = 10;
 const stagedUploadCleanupIntervalMs = 60 * 60 * 1000;
@@ -42,6 +50,7 @@ const predictionRequests = new Map();
 
 loadLocalEnv();
 const taskStore = new TaskStore({ file: tasksFile });
+const productSuiteStore = new ProductSuiteStore({ file: productSuitesFile });
 const stagedUploadStore = new TaskStore({ file: stagedUploadsFile });
 const usageLedger = new UsageLedger({ file: usageLedgerFile });
 const taskScheduler = new TaskScheduler({
@@ -282,11 +291,13 @@ function cleanApiKey(rawKey = "") {
 }
 
 function envKeyForRequest(request = {}) {
+  if (isCutoutRequest(request)) return cutoutEnvKey();
   if (request.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
   return envKeyForModelRequest(request);
 }
 
 function usageEnvKeyForEntry(entry = {}) {
+  if (entry.kind === "image" && entry.modelId === "bria-extract-object") return cutoutEnvKey();
   if (entry.kind === "image" && entry.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
   return envKeyForModelRequest(entry.kind === "video"
     ? { kind: "video", modelId: entry.modelId }
@@ -446,13 +457,28 @@ async function wavespeedFetch(path, options = {}, request = {}) {
     throw error;
   }
 
-  const response = await fetch(`${wavespeedBaseUrl}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      ...(options.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetchWithRetry(`${wavespeedBaseUrl}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...(options.headers || {}),
+      },
+    }, {
+      // A media upload can be repeated safely; task-submission POST requests
+      // must not be retried because WaveSpeed may have accepted and billed them.
+      retryOnNetworkError: path === "/media/upload/binary",
+    });
+  } catch (error) {
+    if (isTransientFetchError(error)) {
+      const transportError = new Error("WaveSpeedAI 上游网络连接暂时中断，请稍后重试。", { cause: error });
+      transportError.statusCode = 503;
+      transportError.retryable = true;
+      throw transportError;
+    }
+    throw error;
+  }
 
   const text = await response.text();
   let body = {};
@@ -496,6 +522,7 @@ async function uploadImage(image, request) {
 }
 
 function endpointFor(request, hasImages) {
+  if (isCutoutRequest(request)) return cutoutEndpointFor(request);
   if (isGrokImageRequest(request)) {
     const model = grokImageModelInfo(request.nanoModel);
     if (!model) throw new Error("请选择可用的 Grok 图片模型。");
@@ -517,6 +544,7 @@ function endpointFor(request, hasImages) {
 }
 
 function payloadFor(request, uploadedImages) {
+  if (isCutoutRequest(request)) return cutoutPayloadFor(request, uploadedImages[0]);
   if (isGrokImageRequest(request)) return grokPayloadFor(request, uploadedImages);
   if (isKlingImageRequest(request)) return klingImagePayloadFor(request, uploadedImages);
   const hasImages = uploadedImages.length > 0;
@@ -566,8 +594,18 @@ async function sleep(ms) {
 }
 
 async function pollPrediction(id, request) {
+  let transientFailures = 0;
   for (let attempt = 0; attempt < 420; attempt += 1) {
-    const body = await wavespeedFetch(`/predictions/${encodeURIComponent(id)}/result`, { method: "GET" }, request);
+    let body;
+    try {
+      body = await wavespeedFetch(`/predictions/${encodeURIComponent(id)}/result`, { method: "GET" }, request);
+      transientFailures = 0;
+    } catch (error) {
+      if (!error?.retryable || transientFailures >= 5) throw error;
+      transientFailures += 1;
+      await sleep(Math.min(10_000, 2_000 * transientFailures));
+      continue;
+    }
     const status = String(body?.data?.status || "").toLowerCase();
     const error = body?.data?.error || body?.error;
 
@@ -669,6 +707,132 @@ function taskId() {
   return `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
 }
 
+function suiteTaskId(suiteId) {
+  return `suite-${suiteId}`;
+}
+
+function suiteOwnerMatches(suite, owner) {
+  return Boolean(suite && (suite.accountId ? suite.accountId === owner.accountId : suite.owner === owner.username));
+}
+
+function suiteStatusForItems(items) {
+  if (items.every((item) => item.status === "done")) return "done";
+  if (items.some((item) => item.status === "running")) return "running";
+  if (items.some((item) => item.status === "done" || item.status === "error")) return "partial";
+  return "queued";
+}
+
+function createProductSuiteTask(input, owner) {
+  const ownerInfo = ownerIdentity(owner);
+  const normalized = normalizeProductSuiteInput(input);
+  const sourceImages = Array.isArray(input.images) ? input.images : [];
+  const backgroundImages = Array.isArray(input.backgroundImages) ? input.backgroundImages : [];
+  const errors = validateProductSuiteInput({ ...normalized, backgroundImages }, sourceImages);
+  if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+  const id = taskId();
+  const staged = stageImagesLocally([...sourceImages, ...backgroundImages], { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
+  const prompts = buildProductSuitePrompts(normalized);
+  const { backgroundImages: _backgroundImages, ...suiteInput } = normalized;
+  const suite = productSuiteStore.create({
+    id,
+    owner: ownerInfo.username,
+    accountId: ownerInfo.accountId,
+    status: "queued",
+    input: { ...suiteInput, prompts },
+    sourceImage: staged[0],
+    backgroundImage: staged[1] || null,
+    productImageUrl: "",
+    items: PRODUCT_SUITE_SLOTS.map((slot) => ({ slot: slot.slot, label: slot.label, status: "queued", prompt: prompts[slot.slot], defaultPrompt: prompts[slot.slot], resultUrl: "", error: "" })),
+  });
+  const task = taskStore.create({ id: suiteTaskId(id), owner: ownerInfo.username, accountId: ownerInfo.accountId, kind: "suite", suiteId: id, status: "queued", results: [], error: "" });
+  return { suite, task };
+}
+
+function publicSuiteResult(suite) {
+  return publicProductSuite(suite);
+}
+
+async function resolvePrediction(batch, request) {
+  if (batch.images?.length) return batch.images;
+  return pollPrediction(batch.id, request);
+}
+
+async function runSuiteImage(slot, suite, productUrl, backgroundUrl) {
+  const request = {
+    kind: "image",
+    provider: suite.input.model === "nanobanana" ? "nanobanana" : "kling",
+    nanoModel: suite.input.model === "nanobanana" ? "nano-banana-pro" : "kling-image-o3-edit",
+    prompt: suite.items.find((item) => item.slot === slot.slot)?.prompt || "",
+    images: [],
+    aspectRatio: "4:5",
+    count: 1,
+    resolution: "2k",
+    quality: "high",
+  };
+  const childId = taskId();
+  const references = [productUrl, ...(backgroundUrl ? [backgroundUrl] : [])];
+  const child = taskStore.create({ id: childId, owner: suite.owner, accountId: suite.accountId, kind: "image", suiteId: suite.id, slot: slot.slot, status: "running", input: { ...request, images: references.map((url, index) => ({ id: `${childId}-${index}`, fileName: index === 0 ? "product-cutout.png" : "suite-background.png", dataUrl: url, mimeType: "image/png" })) }, results: [], error: "", predictionId: null, predictionIds: [] });
+  recordUsageTask(child);
+  try {
+    const batch = await submitOnePrediction(request, references);
+    if (batch.id) {
+      taskStore.patch(childId, { predictionId: batch.id, predictionIds: [batch.id] });
+      recordUsageTask(taskStore.get(childId));
+    }
+    const urls = await resolvePrediction(batch, request);
+    const done = taskStore.patch(childId, { status: "done", results: urls.map((url) => ({ url })), error: "" });
+    recordUsageTask(done, true);
+    productSuiteStore.patchItem(suite.id, slot.slot, { status: "done", resultUrl: urls[0] || "", error: "" });
+  } catch (error) {
+    const failed = taskStore.patch(childId, { status: "error", error: error instanceof Error ? error.message : "生成失败。" });
+    recordUsageTask(failed, true);
+    productSuiteStore.patchItem(suite.id, slot.slot, { status: "error", error: failed.error });
+  }
+}
+
+async function executeProductSuiteTask(queuedTask) {
+  const suiteTask = taskStore.get(queuedTask.id);
+  const suite = suiteTask ? productSuiteStore.get(suiteTask.suiteId) : null;
+  if (!suite || suite.status === "done") return;
+  try {
+    taskStore.patch(suiteTask.id, { status: "running" });
+    productSuiteStore.patch(suite.id, { status: "running" });
+    let productUrl = suite.productImageUrl || "";
+    if (!productUrl) {
+      const cutoutRequest = { mode: "product-cutout", provider: "bria", nanoModel: "bria-extract-object", prompt: "main product", backgroundMode: "transparent", images: [suite.sourceImage] };
+      const cutoutTaskId = taskId();
+      const cutoutTask = taskStore.create({ id: cutoutTaskId, owner: suite.owner, accountId: suite.accountId, kind: "image", suiteId: suite.id, slot: "cutout", status: "running", input: cutoutRequest, results: [], error: "", predictionId: null, predictionIds: [] });
+      recordUsageTask(cutoutTask);
+      try {
+        const sourceUrl = await uploadMedia(suite.sourceImage, "image", cutoutRequest);
+        const cutout = await submitOnePrediction(cutoutRequest, [sourceUrl]);
+        if (cutout.id) {
+          taskStore.patch(cutoutTaskId, { predictionId: cutout.id, predictionIds: [cutout.id] });
+          recordUsageTask(taskStore.get(cutoutTaskId));
+        }
+        [productUrl] = await resolvePrediction(cutout, cutoutRequest);
+        const completedCutout = taskStore.patch(cutoutTaskId, { status: "done", results: [{ url: productUrl }], error: "" });
+        recordUsageTask(completedCutout, true);
+      } catch (error) {
+        const failedCutout = taskStore.patch(cutoutTaskId, { status: "error", error: error instanceof Error ? error.message : "抠图失败。" });
+        recordUsageTask(failedCutout, true);
+        throw error;
+      }
+    }
+    const backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? (suite.backgroundUrl || await uploadMedia(suite.backgroundImage, "image", { provider: "kling", nanoModel: "kling-image-o3-edit" })) : "";
+    productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
+    const targetItems = queuedTask.suiteRetrySlot ? suite.items.filter((item) => item.slot === queuedTask.suiteRetrySlot) : suite.items.filter((item) => item.status !== "done");
+    await Promise.all(targetItems.map((item) => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl)));
+    const finished = productSuiteStore.get(suite.id);
+    const status = suiteStatusForItems(finished.items);
+    productSuiteStore.patch(suite.id, { status });
+    taskStore.patch(suiteTask.id, { status: status === "done" ? "done" : "error", error: status === "partial" ? "部分图片生成失败，请重试失败画面。" : "" });
+  } catch (error) {
+    productSuiteStore.patch(suite.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
+    taskStore.patch(suiteTask.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
+  }
+}
+
 function recordUsageTask(task, queueBilling = false) {
   if (!task) return;
   usageLedger.upsertTask(task);
@@ -715,6 +879,7 @@ async function uploadMedia(media, mediaType, request = {}) {
   if (mediaType === "video" && !["video/mp4", "video/webm", "video/quicktime"].includes(file.mimeType)) throw new Error("动作参考视频仅支持 MP4、WebM 或 MOV 文件。");
   if (mediaType === "image" && !file.mimeType.startsWith("image/")) throw new Error("请上传图片文件。");
   if (file.buffer.length > mediaSizeLimit(mediaType)) throw Object.assign(new Error(mediaType === "video" ? "视频文件太大，请压缩后再试。" : "图片太大，请压缩后再试。"), { statusCode: 413 });
+  if (mediaType === "image") validateWaveSpeedImageSize(file.buffer.length);
   const form = new FormData();
   form.append("file", new Blob([file.buffer], { type: file.mimeType }), file.fileName);
   const body = await wavespeedFetch("/media/upload/binary", { method: "POST", body: form }, request);
@@ -724,6 +889,7 @@ async function uploadMedia(media, mediaType, request = {}) {
 }
 
 async function executeWorkbenchTask(queuedTask) {
+  if (queuedTask?.kind === "suite") return executeProductSuiteTask(queuedTask);
   const task = taskStore.get(queuedTask.id);
   if (!task || task.status === "cancelled" || task.status === "done") return;
   try {
@@ -850,6 +1016,32 @@ async function createWorkbenchTask(input, owner) {
     if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
     return createTaskAndUsage({ id: taskId(), owner: ownerInfo, kind: "video", expectedPredictionCount: 1, status: "queued", input: normalized, results: [], error: "", predictionId: null, predictionIds: [] });
   }
+  if (input?.mode === "product-cutout") {
+    const normalized = normalizeCutoutInput(input);
+    const images = Array.isArray(input.images) ? input.images : [];
+    const errors = validateCutoutInput(normalized, images);
+    if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+    const id = taskId();
+    const referencedUploads = images.filter((image) => image?.stagedUploadId);
+    if (referencedUploads.length > 0 && referencedUploads.length !== images.length) {
+      throw Object.assign(new Error("图片上传状态不一致，请重新上传后再试。"), { statusCode: 400 });
+    }
+    const stagedImages = referencedUploads.length > 0
+      ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: stagedUploadStore })
+      : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
+    return createTaskAndUsage({
+      id,
+      owner: ownerInfo,
+      kind: "image",
+      expectedPredictionCount: 1,
+      status: "queued",
+      input: { ...normalized, mode: "product-cutout", provider: "bria", nanoModel: "bria-extract-object", images: stagedImages },
+      results: [],
+      error: "",
+      predictionId: null,
+      predictionIds: [],
+    });
+  }
   if (!input?.prompt?.trim()) throw Object.assign(new Error("请先输入提示词。"), { statusCode: 400 });
   normalizeRequestOptions(input);
   const id = taskId();
@@ -886,7 +1078,7 @@ async function handleTasksCreate(req, res, owner, videoOnly = false) {
 }
 
 function handleTasksList(res, owner) {
-  sendJson(res, 200, { tasks: taskStore.list().filter((task) => task.accountId ? task.accountId === owner.accountId : task.owner === owner.username).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicTask) });
+  sendJson(res, 200, { tasks: taskStore.list().filter((task) => !task.suiteId && task.kind !== "suite" && (task.accountId ? task.accountId === owner.accountId : task.owner === owner.username)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicTask) });
 }
 
 function ownsTask(task, owner) {
@@ -1022,7 +1214,7 @@ function handleDeleteUser(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
-function currentUsageSummary() {
+function currentUsageSummary(range = null) {
   const sync = usageSynchronizer.status();
   return {
     ...summarizeUsage({
@@ -1031,6 +1223,7 @@ function currentUsageSummary() {
       pendingSyncCount: sync.pendingSyncCount,
       users: usersStore().users,
       entries: usageLedger.list(),
+      range,
     }),
     sync,
   };
@@ -1038,7 +1231,90 @@ function currentUsageSummary() {
 
 function handleUsageGet(req, res) {
   if (!requireAdmin(req, res)) return;
-  sendJson(res, 200, usageResponse(currentUsageSummary()));
+  try {
+    const url = new URL(req.url, "http://localhost");
+    const range = normalizeUsageRange({ from: url.searchParams.get("from"), to: url.searchParams.get("to"), groupBy: url.searchParams.get("groupBy") });
+    sendJson(res, 200, usageResponse(currentUsageSummary(range)));
+  } catch (error) {
+    sendJson(res, 400, { message: error instanceof Error ? error.message : "时间范围无效。" });
+  }
+}
+
+async function handleProductSuiteCreate(req, res, owner) {
+  try {
+    const input = await readJsonBody(req);
+    const { suite, task } = createProductSuiteTask(input, owner);
+    taskScheduler.enqueue(task);
+    sendJson(res, 201, { suite: publicSuiteResult(suite) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "无法创建商品套图任务。" });
+  }
+}
+
+function handleProductSuiteList(res, owner) {
+  sendJson(res, 200, { suites: productSuiteStore.forOwner(owner).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicSuiteResult) });
+}
+
+function handleProductSuiteGet(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)$/)?.[1] || "");
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "Product suite not found." });
+  sendJson(res, 200, { suite: publicSuiteResult(suite) });
+}
+
+async function handleProductSuitePatch(req, res, owner) {
+  try {
+    const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)$/)?.[1] || "");
+    const suite = productSuiteStore.get(id);
+    if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "Product suite not found." });
+    const body = await readJsonBody(req);
+    const prompts = body?.prompts && typeof body.prompts === "object" ? body.prompts : {};
+    const allowed = new Set(PRODUCT_SUITE_SLOTS.map((slot) => slot.slot));
+    const items = suite.items.map((item) => allowed.has(item.slot) && typeof prompts[item.slot] === "string" ? { ...item, prompt: prompts[item.slot].trim().slice(0, 4000) } : item);
+    const updated = productSuiteStore.patch(id, { items, input: { ...suite.input, prompts: Object.fromEntries(items.map((item) => [item.slot, item.prompt])) } });
+    sendJson(res, 200, { suite: publicSuiteResult(updated) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "Unable to update product suite." });
+  }
+}
+
+function handleProductSuiteRetry(req, res, owner) {
+  const match = req.url.match(/^\/workbench\/product-suites\/([^/]+)\/retry\/([^/?]+)/);
+  const id = decodeURIComponent(match?.[1] || "");
+  const slot = decodeURIComponent(match?.[2] || "");
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
+  if (!PRODUCT_SUITE_SLOTS.some((item) => item.slot === slot)) return sendJson(res, 400, { message: "无效的商品套图画面。" });
+  productSuiteStore.patchItem(id, slot, { status: "queued", resultUrl: "", error: "" });
+  const task = taskStore.create({ id: taskId(), owner: owner.username, accountId: owner.accountId, kind: "suite", suiteId: id, suiteRetrySlot: slot, status: "queued", results: [], error: "" });
+  productSuiteStore.patch(id, { status: "queued" });
+  taskScheduler.enqueue(task);
+  sendJson(res, 201, { suite: publicSuiteResult(productSuiteStore.get(id)) });
+}
+
+async function handleProductSuiteDownload(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/]+)\/download\.zip/)?.[1] || "");
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
+  const entries = PRODUCT_SUITE_SLOTS.map((slot) => ({ name: slot.fileName, url: suite.items.find((item) => item.slot === slot.slot)?.resultUrl })).filter((entry) => entry.url);
+  if (entries.length === 0) return sendJson(res, 409, { message: "还没有可下载的套图结果。" });
+  try {
+    const archive = await createZipArchive(entries);
+    res.writeHead(200, { "content-type": "application/zip", "content-disposition": `attachment; filename="product-detail-suite-${id}.zip"`, "content-length": archive.length });
+    res.end(archive);
+  } catch (error) {
+    sendJson(res, 502, { message: error instanceof Error ? error.message : "套图下载失败。" });
+  }
+}
+
+function handleProductSuiteDelete(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)/)?.[1] || "");
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
+  productSuiteStore.remove(id);
+  for (const task of taskStore.list().filter((item) => item.suiteId === id)) taskStore.remove(task.id);
+  if (suite.sourceImage?.stagedPath) cleanupStagedImages(id, { root: stagedImagesRoot });
+  sendJson(res, 200, { ok: true });
 }
 
 function handleUsageSync(req, res) {
@@ -1104,6 +1380,11 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (req.url?.startsWith("/admin/usage?") && req.method === "GET") {
+    handleUsageGet(req, res);
+    return;
+  }
+
   if (req.url === "/admin/usage" && req.method === "GET") {
     handleUsageGet(req, res);
     return;
@@ -1150,6 +1431,48 @@ const httpServer = createServer((req, res) => {
   if (req.url === "/workbench/tasks" && req.method === "GET") {
     const user = requireUser(req, res);
     if (user) handleTasksList(res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/product-suites" && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuiteList(res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/product-suites" && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuiteCreate(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/?]+$/) && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuiteGet(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/?]+$/) && req.method === "PATCH") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuitePatch(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/]+\/retry\/[^/?]+/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuiteRetry(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/]+\/download\.zip/) && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuiteDownload(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/?]+/) && req.method === "DELETE") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuiteDelete(req, res, user);
     return;
   }
 
@@ -1201,7 +1524,7 @@ httpServer.listen(port, "0.0.0.0", () => {
   console.log(`AI image workbench listening on http://0.0.0.0:${port}`);
 });
 
-for (const task of taskStore.list()) {
+for (const task of taskStore.list().filter((item) => !item.suiteId)) {
   const action = recoveryAction(task);
   if (action === "enqueue") {
     recordUsageTask(task);
@@ -1212,6 +1535,11 @@ for (const task of taskStore.list()) {
     if (recovered) taskScheduler.enqueue(recovered);
   }
   if (action === "cancel") patchTaskAndUsage(task.id, { status: "cancelled", cancelledAt: new Date().toISOString() }, true);
+}
+
+for (const task of taskStore.list().filter((item) => item.kind === "suite" && (item.status === "queued" || item.status === "running"))) {
+  const recovered = task.status === "running" ? taskStore.patch(task.id, { status: "queued", error: "" }) : task;
+  if (recovered) taskScheduler.enqueue(recovered);
 }
 
 if (usageLedger.pendingCount() > 0) usageSynchronizer.enqueue();

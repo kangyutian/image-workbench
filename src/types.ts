@@ -26,7 +26,7 @@ export interface UploadedImage {
   size?: number;
 }
 
-export type TaskPreset = "print-extraction";
+export type TaskPreset = "print-extraction" | "product-cutout";
 
 export interface GenerateRequest {
   provider: ProviderId;

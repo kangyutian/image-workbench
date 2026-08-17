@@ -13,14 +13,14 @@ export class TaskScheduler {
   constructor({ maxConcurrent = 2, run }) {
     this.maxConcurrent = Math.max(1, Number(maxConcurrent) || 2);
     this.run = run;
-    this.queues = { image: [], video: [] };
+    this.queues = { image: [], video: [], suite: [] };
     this.active = 0;
     this.lastKind = "video";
     this.drainScheduled = false;
   }
 
   enqueue(task) {
-    if (task?.kind !== "image" && task?.kind !== "video") throw new Error("Unsupported task kind.");
+    if (task?.kind !== "image" && task?.kind !== "video" && task?.kind !== "suite") throw new Error("Unsupported task kind.");
     this.queues[task.kind].push(task);
     this.scheduleDrain();
   }
@@ -35,9 +35,12 @@ export class TaskScheduler {
   }
 
   next() {
-    const first = this.lastKind === "image" ? "video" : "image";
-    const second = first === "image" ? "video" : "image";
-    const task = this.queues[first].shift() || this.queues[second].shift();
+    const order = this.lastKind === "image" ? ["video", "suite", "image"] : ["image", "video", "suite"];
+    let task = null;
+    for (const kind of order) {
+      task = this.queues[kind].shift();
+      if (task) break;
+    }
     if (task) this.lastKind = task.kind;
     return task;
   }
@@ -51,5 +54,5 @@ export class TaskScheduler {
     }
   }
 
-  snapshot() { return { active: this.active, queued: this.queues.image.length + this.queues.video.length, image: this.queues.image.length, video: this.queues.video.length }; }
+  snapshot() { return { active: this.active, queued: Object.values(this.queues).reduce((sum, queue) => sum + queue.length, 0), image: this.queues.image.length, video: this.queues.video.length, suite: this.queues.suite.length }; }
 }

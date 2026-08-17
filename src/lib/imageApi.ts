@@ -238,7 +238,15 @@ interface StagedImage {
 }
 
 async function requestJson(path: string, init?: RequestInit) {
-  const response = await fetch(path, init);
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    if (error instanceof TypeError && error.message.toLowerCase() === "fetch failed") {
+      throw new Error("服务器连接暂时中断，请检查网络后重试。" );
+    }
+    throw error;
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 413) throw new Error("上传图片太大，请压缩图片或减少参考图数量后再试。");

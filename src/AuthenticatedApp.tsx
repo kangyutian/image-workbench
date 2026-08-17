@@ -115,11 +115,15 @@ function UsageManagement() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
+  const [rangePreset, setRangePreset] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [groupBy, setGroupBy] = useState<"day" | "week" | "month">("day");
 
-  async function refresh() {
+  async function refresh(nextRange?: { from: string; to: string; groupBy: "day" | "week" | "month" }) {
     try {
       setError("");
-      setUsage(await getUsageSummary());
+      setUsage(await getUsageSummary(nextRange));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法加载用量统计。");
     } finally {
@@ -128,6 +132,23 @@ function UsageManagement() {
   }
 
   useEffect(() => { void refresh(); }, []);
+
+  function dateValue(offsetDays = 0) {
+    const date = new Date();
+    date.setDate(date.getDate() + offsetDays);
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(date);
+  }
+
+  function applyRange(preset: string) {
+    if (preset === "all") {
+      setFrom(""); setTo(""); void refresh(); return;
+    }
+    const end = dateValue();
+    const start = preset === "today" ? end : preset === "7d" ? dateValue(-6) : preset === "month" ? `${end.slice(0, 7)}-01` : from;
+    const nextTo = preset === "custom" ? to : end;
+    if (!start || !nextTo) { setError("请选择开始和结束日期。"); return; }
+    setFrom(start); setTo(nextTo); void refresh({ from: start, to: nextTo, groupBy });
+  }
 
   useEffect(() => {
     if (!usage?.sync.running) return undefined;
@@ -140,7 +161,7 @@ function UsageManagement() {
     setError("");
     try {
       await syncUsage();
-      await refresh();
+      await refresh(usage?.range || undefined);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "账单同步启动失败。");
     } finally {
@@ -155,6 +176,16 @@ function UsageManagement() {
     </header>
     {error && <p className="inline-error">{error}</p>}
     {loading && !usage ? <div className="user-loading"><Loader2 className="spin" size={20} />正在加载用量统计</div> : usage ? <>
+      <section className="usage-filter-panel">
+        <div className="usage-filter-presets" role="tablist" aria-label="时间范围">
+          {[['all', '累计'], ['today', '今天'], ['7d', '近 7 天'], ['month', '本月'], ['custom', '自定义']].map(([value, label]) => <button key={value} className={rangePreset === value ? "active" : ""} type="button" onClick={() => { setRangePreset(value); if (value !== "custom") applyRange(value); }}>{label}</button>)}
+        </div>
+        <label className="usage-date-field"><span>开始日期</span><input type="date" value={from} onChange={(event) => { setRangePreset("custom"); setFrom(event.target.value); }} /></label>
+        <label className="usage-date-field"><span>结束日期</span><input type="date" value={to} onChange={(event) => { setRangePreset("custom"); setTo(event.target.value); }} /></label>
+        <label className="usage-date-field"><span>统计粒度</span><select value={groupBy} onChange={(event) => setGroupBy(event.target.value as typeof groupBy)}><option value="day">按日</option><option value="week">按周</option><option value="month">按月</option></select></label>
+        <button className="primary usage-apply-button" type="button" onClick={() => applyRange("custom")}>应用筛选</button>
+      </section>
+      {usage.timeSeries && <section className="usage-trend-panel"><div className="usage-trend-heading"><div><p className="eyebrow">Time trend</p><h2>用量趋势</h2></div><span>{usage.range?.from} 至 {usage.range?.to}</span></div><div className="usage-trend-chart">{usage.timeSeries.map((point) => { const max = Math.max(...usage.timeSeries!.map((item) => item.amountUsd), 0.000001); return <div className="usage-trend-bar" key={point.key} title={`${point.label}：${formatUsageUsd(point.amountUsd)}，${point.taskCount} 个任务`}><div className="usage-trend-value">{point.amountUsd ? formatUsageUsd(point.amountUsd) : ""}</div><div className="usage-trend-fill" style={{ height: `${Math.max(4, point.amountUsd / max * 100)}%` }} /><small>{point.label}</small></div>; })}</div></section>}
       <section className="usage-summary-grid">
         <div><span>累计实际费用</span><strong>{formatUsageUsd(usage.totals.amountUsd)}</strong></div>
         <div><span>累计任务</span><strong>{usage.totals.taskCount}</strong><small>{usage.totals.imageTaskCount} 图片 · {usage.totals.videoTaskCount} 视频</small></div>
@@ -178,5 +209,5 @@ export default function AuthenticatedApp() {
   if (!ready) return <main className="boot-screen"><Loader2 className="spin" size={26} /></main>;
   if (!user) return <LoginScreen onSignedIn={setUser} />;
   async function logout() { await signOut(); setUser(null); setView("workbench"); }
-  return <div className="protected-shell"><aside className="app-sidebar"><div className="brand"><Image size={24} /><span>AI 生图工作台</span></div><nav><button className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}><Image size={19} />工作台</button>{user.role === "admin" && <><button className={view === "users" ? "active" : ""} onClick={() => setView("users")}><Users size={19} />用户管理</button><button className={view === "usage" ? "active" : ""} onClick={() => setView("usage")}><BarChart3 size={19} />用量统计</button></>}</nav><div className="sidebar-account"><span><ShieldCheck size={17} />{user.username}</span><button title="退出登录" onClick={() => void logout()}><LogOut size={18} /></button></div></aside><main className="protected-content">{view === "users" && user.role === "admin" ? <UserManagement currentUser={user} /> : view === "usage" && user.role === "admin" ? <UsageManagement /> : <App />}</main></div>;
+  return <div className="protected-shell"><aside className="app-sidebar"><div className="brand"><span className="brand-mark"><Image size={22} /></span><span>Wavespeed AI</span></div><nav><button className={view === "workbench" ? "active" : ""} onClick={() => setView("workbench")}><Image size={19} />工作台</button>{user.role === "admin" && <div className="sidebar-admin-group"><span>管理员</span><button className={view === "users" ? "active" : ""} onClick={() => setView("users")}><Users size={19} />用户管理</button><button className={view === "usage" ? "active" : ""} onClick={() => setView("usage")}><BarChart3 size={19} />用量统计</button></div>}</nav><div className="sidebar-footer-links"><button type="button" onClick={() => setView("workbench")}>? 帮助中心</button><button type="button" onClick={() => setView("workbench")}>↗ 反馈建议</button></div><div className="sidebar-account"><span><span className="account-avatar">W</span><span><strong>Wavespeed</strong><small>专业版</small></span></span><button title="退出登录" onClick={() => void logout()}><LogOut size={18} /></button></div></aside><main className="protected-content">{view === "users" && user.role === "admin" ? <UserManagement currentUser={user} /> : view === "usage" && user.role === "admin" ? <UsageManagement /> : <App />}</main></div>;
 }

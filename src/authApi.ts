@@ -42,6 +42,8 @@ export interface UsageSummary {
   pendingSyncCount: number;
   totals: Omit<UsageAccountSummary, "accountId" | "username" | "status" | "role" | "models" | "billingPendingCount" | "billingFailedCount">;
   accounts: UsageAccountSummary[];
+  range?: { from: string; to: string; groupBy: "day" | "week" | "month" } | null;
+  timeSeries?: Array<{ key: string; label: string; taskCount: number; imageTaskCount: number; videoTaskCount: number; successCount: number; failureCount: number; resultCount: number; amountUsd: number }>;
   sync: {
     running: boolean;
     lastStartedAt: string | null;
@@ -82,8 +84,9 @@ export async function deleteUser(username: string) {
   await request(`/admin/users/${encodeURIComponent(username)}`, { method: "DELETE" });
 }
 
-export async function getUsageSummary(): Promise<UsageSummary> {
-  return (await request("/admin/usage")).usage as UsageSummary;
+export async function getUsageSummary(range?: { from: string; to: string; groupBy: "day" | "week" | "month" }): Promise<UsageSummary> {
+  const query = range ? `?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}&groupBy=${range.groupBy}` : "";
+  return (await request(`/admin/usage${query}`)).usage as UsageSummary;
 }
 
 export async function syncUsage() {

@@ -5,6 +5,8 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   server: {
+    host: "0.0.0.0",
+    allowedHosts: ["terminal.local"],
     proxy: {
       "/gemai/v1beta": {
         target: "https://api.gemai.cc/v1beta",

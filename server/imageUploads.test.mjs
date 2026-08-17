@@ -9,9 +9,11 @@ import {
   cleanupStagedImages,
   fileForStagedImage,
   publicTask,
+  publicProductSuite,
   purgeExpiredStagedUploads,
   stageImagesLocally,
   uploadImagesInParallel,
+  validateWaveSpeedImageSize,
   validateReferenceImageCount,
 } from "./imageUploads.mjs";
 import { TaskStore } from "./taskStore.mjs";
@@ -128,6 +130,22 @@ test("public task responses hide prediction and billing internals", () => {
   assert.equal("billingRecords" in task, false);
   assert.equal("owner" in task, false);
   assert.equal("accountId" in task, false);
+});
+
+test("public task responses translate the raw upstream fetch failure", () => {
+  const task = publicTask({ id: "task-network-error", status: "error", error: "fetch failed" });
+  assert.equal(task.error, "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。");
+});
+
+test("public product suite responses never include embedded background bytes", () => {
+  const suite = publicProductSuite({ id: "suite-1", input: { backgroundImages: [{ dataUrl: "data:image/png;base64,AAAA" }] }, items: [] });
+  assert.equal("backgroundImages" in (suite.input || {}), false);
+  assert.doesNotMatch(JSON.stringify(suite), /data:image/);
+});
+
+test("WaveSpeed image uploads reject files at the provider's 10MB limit", () => {
+  assert.throws(() => validateWaveSpeedImageSize(10 * 1024 * 1024), /10MB/);
+  assert.equal(validateWaveSpeedImageSize(10 * 1024 * 1024 - 1), 10 * 1024 * 1024 - 1);
 });
 
 test("cleanup removes only the selected task staging directory", () => {

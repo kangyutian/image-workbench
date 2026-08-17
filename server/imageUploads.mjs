@@ -8,6 +8,15 @@ const extensionByMime = {
   "image/webp": ".webp",
 };
 
+export const WAVESPEED_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+export function validateWaveSpeedImageSize(size, maxBytes = WAVESPEED_MAX_IMAGE_BYTES) {
+  if (Number(size) >= maxBytes) {
+    throw Object.assign(new Error("图片超过 WaveSpeedAI 的 10MB 限制，请压缩后再试。"), { statusCode: 413 });
+  }
+  return Number(size);
+}
+
 function safeTaskDirectory(taskId, root) {
   const id = String(taskId || "");
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("Invalid image task ID.");
@@ -155,7 +164,21 @@ export function purgeExpiredStagedUploads({
 export function publicTask(task) {
   const clone = JSON.parse(JSON.stringify(task));
   for (const key of ["owner", "accountId", "predictionId", "predictionIds", "predictionSettlements", "billingRecords", "amountUsd", "billingSync", "expectedPredictionCount"]) delete clone[key];
+  if (clone.error === "fetch failed") clone.error = "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。";
   if (Array.isArray(clone?.input?.images)) clone.input.images = clone.input.images.map(publicImageMetadata);
+  return clone;
+}
+
+export function publicProductSuite(suite) {
+  const clone = JSON.parse(JSON.stringify(suite));
+  for (const key of ["owner", "accountId", "sourceImage", "backgroundImage", "predictionIds", "billingRecords"]) delete clone[key];
+  if (clone.input && typeof clone.input === "object") delete clone.input.backgroundImages;
+  if (Array.isArray(clone.items)) clone.items = clone.items.map((item) => {
+    const error = item.error === "fetch failed" ? "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。" : item.error || "";
+    const safe = { slot: item.slot, label: item.label, status: item.status, prompt: item.prompt || "", defaultPrompt: item.defaultPrompt || item.prompt || "", resultUrl: item.resultUrl || "", error };
+    return safe;
+  });
+  if (clone.error === "fetch failed") clone.error = "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。";
   return clone;
 }
 
