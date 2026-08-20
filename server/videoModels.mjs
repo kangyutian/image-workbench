@@ -112,7 +112,7 @@ export function normalizeVideoInput(input = {}) {
     kind: "video",
     modelId: model.id,
     prompt: String(input.prompt || "").trim(),
-    referenceImages: Array.isArray(input.referenceImages) ? input.referenceImages.filter((item) => typeof item?.url === "string" && item.url) : [],
+    referenceImages: Array.isArray(input.referenceImages) ? input.referenceImages.filter((item) => (typeof item?.url === "string" && item.url) || item?.stagedPath) : [],
   };
 
   if (model.mode === "motion-control") {
@@ -140,7 +140,7 @@ export function validateVideoInput(input = {}) {
   if (normalized.referenceImages.length === 0) errors.push("请先上传参考图。");
   if (normalized.referenceImages.length > maxReferenceImages) errors.push(`This model only supports ${maxReferenceImages === 1 ? "one image" : "two images"}.`);
   if (model.requiresPrompt && !normalized.prompt) errors.push("请先输入运动提示词。");
-  if (model.mode === "motion-control" && typeof normalized.motionVideo?.url !== "string") errors.push("请上传动作参考视频。");
+  if (model.mode === "motion-control" && typeof normalized.motionVideo?.url !== "string" && !normalized.motionVideo?.stagedPath) errors.push("请上传动作参考视频。");
   return errors;
 }
 

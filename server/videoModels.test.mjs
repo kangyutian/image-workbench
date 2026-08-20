@@ -148,3 +148,11 @@ test("rejects a second image for Kling motion-control", () => {
 
   assert.match(errors[0], /only supports one image/i);
 });
+
+test("accepts staged image and motion references before the worker uploads them", () => {
+  assert.deepEqual(validateVideoInput({
+    modelId: "kling-3-std-motion-control",
+    referenceImages: [{ stagedPath: "upload-1/start.png", stagedUploadId: "upload-1" }],
+    motionVideo: { stagedPath: "upload-2/motion.mp4", stagedUploadId: "upload-2" },
+  }), []);
+});

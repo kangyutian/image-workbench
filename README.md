@@ -15,6 +15,10 @@ npm.cmd run dev -- --port 5173
 http://127.0.0.1:5173
 ```
 
+## Codex 远程 MCP
+
+远程 MCP 接入说明见 [`docs/mcp.md`](docs/mcp.md)。
+
 ## gemai 推荐配置
 
 接口文档来源：

@@ -8,7 +8,7 @@ import {
   claimStagedUploadReferences,
   cleanupStagedImageFiles,
   cleanupStagedImages,
-  fileForStagedImage,
+  fileForStagedMedia,
   publicTask,
   purgeExpiredStagedUploads,
   stageImagesLocally,
@@ -18,7 +18,7 @@ import {
   publicProductSuite,
 } from "./server/imageUploads.mjs";
 import { TaskStore } from "./server/taskStore.mjs";
-import { validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
+import { clientVideoModels, validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
 import { envKeyForModelRequest, grokImageModelInfo, grokPayloadFor, isGrokImageRequest, normalizeGrokImageInput, validateGrokImageInput } from "./server/grokModels.mjs";
 import { isKlingImageRequest, klingImageModelInfo, klingImagePayloadFor, normalizeKlingImageInput, requiresDedicatedKlingImageKey, validateKlingImageInput } from "./server/klingImageModels.mjs";
 import { cutoutEndpointFor, cutoutEnvKey, cutoutPayloadFor, isCutoutRequest, normalizeCutoutInput, validateCutoutInput } from "./server/cutoutModels.mjs";
@@ -31,6 +31,13 @@ import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInp
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
 import { fetchWithRetry, isTransientFetchError } from "./server/wavespeedTransport.mjs";
+import { authenticateMcpRequest, mcpConfigFromEnv, usersWithMcpService } from "./server/mcpAuth.mjs";
+import { handleMcpHttpRequest } from "./server/mcpHttp.mjs";
+import { createMcpServer } from "./server/mcpServer.mjs";
+import { createMcpOperations } from "./server/mcpOperations.mjs";
+import { McpIdempotencyStore } from "./server/mcpIdempotency.mjs";
+import { MCP_MAX_IMAGE_BYTES, McpUploadStore, claimUpload, createUploadTicket, markUploadReady, mediaFromUpload, publicUpload, purgeExpiredMcpUploads, uploadTokenMatches, writeUploadBody } from "./server/mcpUploads.mjs";
+import { issueDownloadToken, verifyDownloadToken } from "./server/mcpDownloads.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -40,18 +47,24 @@ const maxImportedImageBytes = 30 * 1024 * 1024;
 const usersFile = resolve("data", "users.json");
 const tasksFile = resolve("data", "tasks.json");
 const stagedUploadsFile = resolve("data", "staged-uploads.json");
+const mcpUploadsFile = resolve("data", "mcp-uploads.json");
+const mcpIdempotencyFile = resolve("data", "mcp-idempotency.json");
 const usageLedgerFile = resolve("data", "usage-ledger.json");
 const productSuitesFile = resolve("data", "product-suites.json");
 const stagedImagesRoot = resolve("data", "staged-images");
+const mcpUploadsRoot = resolve("data", "mcp-uploads");
 const maxReferenceImages = 10;
 const stagedUploadCleanupIntervalMs = 60 * 60 * 1000;
 const sessionMaxAgeSeconds = 7 * 24 * 60 * 60;
 const predictionRequests = new Map();
 
 loadLocalEnv();
+const mcpConfig = mcpConfigFromEnv();
 const taskStore = new TaskStore({ file: tasksFile });
 const productSuiteStore = new ProductSuiteStore({ file: productSuitesFile });
 const stagedUploadStore = new TaskStore({ file: stagedUploadsFile });
+const mcpUploadStore = new McpUploadStore({ file: mcpUploadsFile });
+const mcpIdempotencyStore = new McpIdempotencyStore({ file: mcpIdempotencyFile });
 const usageLedger = new UsageLedger({ file: usageLedgerFile });
 const taskScheduler = new TaskScheduler({
   maxConcurrent: Number(process.env.WORKBENCH_MAX_CONCURRENT_GENERATIONS || 2),
@@ -72,8 +85,20 @@ function cleanupExpiredStagedUploads() {
   }
 }
 
+function cleanupExpiredMcpUploads() {
+  try {
+    purgeExpiredMcpUploads({ store: mcpUploadStore, root: mcpUploadsRoot });
+  } catch (error) {
+    console.warn("Unable to clean expired MCP uploads", error instanceof Error ? error.message : error);
+  }
+}
+
 cleanupExpiredStagedUploads();
-const stagedUploadCleanupTimer = setInterval(cleanupExpiredStagedUploads, stagedUploadCleanupIntervalMs);
+cleanupExpiredMcpUploads();
+const stagedUploadCleanupTimer = setInterval(() => {
+  cleanupExpiredStagedUploads();
+  cleanupExpiredMcpUploads();
+}, stagedUploadCleanupIntervalMs);
 stagedUploadCleanupTimer.unref();
 
 function usersStore() {
@@ -722,7 +747,7 @@ function suiteStatusForItems(items) {
   return "queued";
 }
 
-function createProductSuiteTask(input, owner) {
+function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore } = {}) {
   const ownerInfo = ownerIdentity(owner);
   const normalized = normalizeProductSuiteInput(input);
   const sourceImages = Array.isArray(input.images) ? input.images : [];
@@ -730,7 +755,19 @@ function createProductSuiteTask(input, owner) {
   const errors = validateProductSuiteInput({ ...normalized, backgroundImages }, sourceImages);
   if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
   const id = taskId();
-  const staged = stageImagesLocally([...sourceImages, ...backgroundImages], { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
+  const allImages = [...sourceImages, ...backgroundImages];
+  const uploadReferences = allImages.filter((image) => image?.stagedUploadId);
+  const claimedByUploadId = new Map();
+  if (uploadReferences.length) {
+    for (const image of uploadReferences) {
+      const claimed = claimStagedUploadReferences([image], { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: uploadStore })[0];
+      claimedByUploadId.set(image.stagedUploadId, claimed);
+    }
+  }
+  const localImages = allImages.filter((image) => !image?.stagedUploadId);
+  const locallyStaged = localImages.length ? stageImagesLocally(localImages, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes }) : [];
+  let localIndex = 0;
+  const staged = allImages.map((image) => image?.stagedUploadId ? claimedByUploadId.get(image.stagedUploadId) : locallyStaged[localIndex++]);
   const prompts = buildProductSuitePrompts(normalized);
   const { backgroundImages: _backgroundImages, ...suiteInput } = normalized;
   const suite = productSuiteStore.create({
@@ -813,13 +850,18 @@ async function executeProductSuiteTask(queuedTask) {
         [productUrl] = await resolvePrediction(cutout, cutoutRequest);
         const completedCutout = taskStore.patch(cutoutTaskId, { status: "done", results: [{ url: productUrl }], error: "" });
         recordUsageTask(completedCutout, true);
+        cleanupStagedMediaReferences([suite.sourceImage]);
       } catch (error) {
         const failedCutout = taskStore.patch(cutoutTaskId, { status: "error", error: error instanceof Error ? error.message : "抠图失败。" });
         recordUsageTask(failedCutout, true);
         throw error;
       }
     }
-    const backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? (suite.backgroundUrl || await uploadMedia(suite.backgroundImage, "image", { provider: "kling", nanoModel: "kling-image-o3-edit" })) : "";
+    let backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? suite.backgroundUrl || "" : "";
+    if (!backgroundUrl && suite.input.backgroundMode === "custom" && suite.backgroundImage) {
+      backgroundUrl = await uploadMedia(suite.backgroundImage, "image", { provider: "kling", nanoModel: "kling-image-o3-edit" });
+      cleanupStagedMediaReferences([suite.backgroundImage]);
+    }
     productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
     const targetItems = queuedTask.suiteRetrySlot ? suite.items.filter((item) => item.slot === queuedTask.suiteRetrySlot) : suite.items.filter((item) => item.status !== "done");
     await Promise.all(targetItems.map((item) => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl)));
@@ -855,6 +897,125 @@ function ownerIdentity(owner) {
   };
 }
 
+const mcpImageModels = [
+  { id: "nano-banana-2-fast", provider: "nanobanana", mode: "text-to-image,image-to-image" },
+  { id: "nano-banana-2", provider: "nanobanana", mode: "text-to-image,image-to-image" },
+  { id: "nano-banana-pro", provider: "nanobanana", mode: "text-to-image,image-to-image" },
+  { id: "nano-banana-pro-edit-multi", provider: "nanobanana", mode: "multi-image-edit" },
+  { id: "image2", provider: "image2", mode: "text-to-image,image-to-image" },
+  { id: "grok-2-image", provider: "grok", mode: "text-to-image" },
+  { id: "grok-imagine-image-edit", provider: "grok", mode: "image-to-image" },
+  { id: "grok-imagine-image-quality", provider: "grok", mode: "text-to-image" },
+  { id: "kling-image-v3-edit", provider: "kling", mode: "image-to-image" },
+  { id: "kling-image-o3-edit", provider: "kling", mode: "multi-image-edit" },
+  { id: "kling-image-o1", provider: "kling", mode: "image-to-image" },
+];
+
+function mcpPublicBaseUrl() {
+  return String(process.env.WORKBENCH_PUBLIC_URL || "https://nxtnumber.com").replace(/\/$/, "");
+}
+
+function mcpCapabilities() {
+  return {
+    account: { username: mcpConfig.username, account_id: mcpConfig.accountId },
+    limits: { image_max_bytes: MCP_MAX_IMAGE_BYTES - 1, image_limit_label: "小于10MB", video_max_bytes: Number(process.env.WORKBENCH_MAX_VIDEO_UPLOAD_BYTES || 100 * 1024 * 1024) },
+    image_models: mcpImageModels,
+    video_models: clientVideoModels(),
+    cutout: { model: "bria-extract-object", backgrounds: ["transparent", "white"] },
+    product_suite: { slots: PRODUCT_SUITE_SLOTS.map(({ slot, label, fileName }) => ({ slot, label, file_name: fileName })), aspect_ratio: "4:5", resolution: "2k" },
+  };
+}
+
+function mcpResolveMediaRef(ref, { mediaKind, owner }) {
+  if (typeof ref?.url === "string" && /^https:\/\//i.test(ref.url)) {
+    return { dataUrl: ref.url, url: ref.url, fileName: mediaKind === "video" ? "reference.mp4" : "reference.png", mimeType: mediaKind === "video" ? "video/mp4" : "image/png" };
+  }
+  const uploadId = String(ref?.media_id || "");
+  const record = uploadId ? mcpUploadStore.get(uploadId) : null;
+  return mediaFromUpload(record, owner);
+}
+
+function mcpTaskOrNotFound(id, owner) {
+  const task = taskStore.get(id);
+  if (!task || !ownsTask(task, owner)) throw Object.assign(new Error("任务不存在。"), { statusCode: 404 });
+  return task;
+}
+
+function mcpSuiteOrNotFound(id, owner) {
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) throw Object.assign(new Error("商品套图任务不存在。"), { statusCode: 404 });
+  return suite;
+}
+
+function mcpDownloadUrl(owner, kind, id) {
+  const token = issueDownloadToken(mcpConfig.token, { accountId: owner.accountId, kind, id });
+  return `${mcpPublicBaseUrl()}/mcp/downloads/${kind}/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
+}
+
+function createMcpOperationsFor(owner) {
+  return createMcpOperations({
+    owner,
+    idempotency: mcpIdempotencyStore,
+    capabilities: mcpCapabilities,
+    resolveMediaRef: mcpResolveMediaRef,
+    createUploadTicket: ({ owner: uploadOwner, ...input }) => {
+      const ticket = createUploadTicket({ store: mcpUploadStore, owner: uploadOwner, fileName: input.file_name, mimeType: input.mime_type, size: input.size, mediaKind: input.media_kind });
+      return { ...ticket, upload_url: `${mcpPublicBaseUrl()}${ticket.upload_url}` };
+    },
+    getUpload: ({ uploadId, owner: uploadOwner }) => {
+      const record = mcpUploadStore.get(uploadId);
+      const result = publicUpload(record, uploadOwner);
+      if (!result) throw Object.assign(new Error("上传记录不存在。"), { statusCode: 404 });
+      return result;
+    },
+    createTask: (input, taskOwner) => createWorkbenchTask(input, taskOwner, { uploadStore: mcpUploadStore }),
+    enqueue: (task) => taskScheduler.enqueue(task),
+    publicTask,
+    publicSuite: publicSuiteResult,
+    listTasks: ({ owner: taskOwner, kind, status, limit = 100 }) => ({
+      tasks: taskStore.list()
+        .filter((task) => !task.suiteId && task.kind !== "suite" && ownsTask(task, taskOwner))
+        .filter((task) => !kind || task.kind === kind)
+        .filter((task) => !status || task.status === status)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .slice(0, Math.max(1, Math.min(100, Number(limit) || 100)))
+        .map(publicTask),
+    }),
+    getTask: ({ taskId, owner: taskOwner }) => publicTask(mcpTaskOrNotFound(taskId, taskOwner)),
+    listProductSuites: ({ owner: suiteOwner }) => ({ suites: productSuiteStore.forOwner(suiteOwner).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicSuiteResult) }),
+    getProductSuite: ({ suiteId, owner: suiteOwner }) => publicSuiteResult(mcpSuiteOrNotFound(suiteId, suiteOwner)),
+    getTaskDownload: ({ taskId, owner: taskOwner }) => {
+      const task = mcpTaskOrNotFound(taskId, taskOwner);
+      return { task_id: task.id, download_url: mcpDownloadUrl(taskOwner, "task", task.id), expires_in_seconds: 900, urls: (task.results || []).map((result) => result.url).filter(Boolean) };
+    },
+    getProductSuiteDownload: ({ suiteId, owner: suiteOwner }) => {
+      const suite = mcpSuiteOrNotFound(suiteId, suiteOwner);
+      return { suite_id: suite.id, download_url: mcpDownloadUrl(suiteOwner, "suite", suite.id), expires_in_seconds: 900 };
+    },
+    createProductSuite: (input, suiteOwner) => createProductSuiteTask(input, suiteOwner, { uploadStore: mcpUploadStore }),
+    retryTask: ({ taskId: targetTaskId, owner: taskOwner }) => {
+      const task = mcpTaskOrNotFound(targetTaskId, taskOwner);
+      const retry = createTaskAndUsage({ id: taskId(), owner: taskOwner, kind: task.kind, expectedPredictionCount: task.expectedPredictionCount || (task.kind === "video" ? 1 : Math.max(1, Math.min(8, Number(task.input?.count) || 1))), status: "queued", input: task.input, results: [], error: "", predictionId: null, predictionIds: [], retryOf: task.id });
+      taskScheduler.enqueue(retry);
+      return retry;
+    },
+    cancelTask: ({ taskId, owner: taskOwner }) => {
+      const task = mcpTaskOrNotFound(taskId, taskOwner);
+      const status = task.status === "queued" ? "cancelled" : "cancel_requested";
+      return patchTaskAndUsage(task.id, { status, cancelledAt: new Date().toISOString() }, true);
+    },
+    retryProductSuiteSlot: ({ suiteId, slot, owner: suiteOwner }) => {
+      const suite = mcpSuiteOrNotFound(suiteId, suiteOwner);
+      if (!PRODUCT_SUITE_SLOTS.some((item) => item.slot === slot)) throw Object.assign(new Error("无效的商品套图画面。"), { statusCode: 400 });
+      productSuiteStore.patchItem(suiteId, slot, { status: "queued", resultUrl: "", error: "" });
+      const task = taskStore.create({ id: taskId(), owner: suiteOwner.username, accountId: suiteOwner.accountId, kind: "suite", suiteId, suiteRetrySlot: slot, status: "queued", results: [], error: "" });
+      productSuiteStore.patch(suiteId, { status: "queued" });
+      taskScheduler.enqueue(task);
+      return { suite: productSuiteStore.get(suiteId), task };
+    },
+  });
+}
+
 function createTaskAndUsage(input) {
   const owner = ownerIdentity(input.owner);
   const task = taskStore.create({ ...input, owner: owner.username, accountId: owner.accountId });
@@ -873,8 +1034,9 @@ function mediaSizeLimit(mediaType) {
 async function uploadMedia(media, mediaType, request = {}) {
   const url = publicMediaUrl(media);
   if (url) return url;
-  const file = mediaType === "image" && media?.stagedPath
-    ? fileForStagedImage(media, { root: stagedImagesRoot })
+  const mcpRecord = media?.stagedUploadId ? mcpUploadStore.get(media.stagedUploadId) : null;
+  const file = media?.stagedPath
+    ? fileForStagedMedia(media, { root: mcpRecord ? mcpUploadsRoot : stagedImagesRoot })
     : dataUrlToFile(media);
   if (mediaType === "video" && !["video/mp4", "video/webm", "video/quicktime"].includes(file.mimeType)) throw new Error("动作参考视频仅支持 MP4、WebM 或 MOV 文件。");
   if (mediaType === "image" && !file.mimeType.startsWith("image/")) throw new Error("请上传图片文件。");
@@ -886,6 +1048,41 @@ async function uploadMedia(media, mediaType, request = {}) {
   const uploadUrl = body?.data?.download_url;
   if (!uploadUrl) throw new Error("WaveSpeedAI 上传成功，但没有返回 download_url。");
   return uploadUrl;
+}
+
+function cleanupStagedMediaReferences(mediaItems = []) {
+  const local = [];
+  const mcp = [];
+  for (const media of mediaItems.filter(Boolean)) {
+    if (!media?.stagedPath) continue;
+    if (media.stagedUploadId && mcpUploadStore.get(media.stagedUploadId)) mcp.push(media);
+    else local.push(media);
+  }
+  if (local.length) {
+    cleanupStagedImageFiles(local, { root: stagedImagesRoot });
+    for (const media of local) if (media.stagedUploadId) stagedUploadStore.remove(media.stagedUploadId);
+  }
+  if (mcp.length) {
+    cleanupStagedImageFiles(mcp, { root: mcpUploadsRoot });
+    for (const media of mcp) mcpUploadStore.remove(media.stagedUploadId);
+  }
+}
+
+async function prepareVideoTaskMedia(task, request) {
+  const imageInputs = Array.isArray(request.referenceImages) ? request.referenceImages : [];
+  const uploadedImages = await uploadImagesInParallel(imageInputs, (image) => uploadMedia(image, "image", request));
+  const motionInput = request.motionVideo;
+  const motionUrl = motionInput ? await uploadMedia(motionInput, "video", request) : "";
+  const prepared = {
+    ...request,
+    referenceImages: uploadedImages.map((url) => ({ url })),
+    ...(motionInput ? { motionVideo: { url: motionUrl } } : {}),
+  };
+  if (imageInputs.some((image) => image?.stagedPath) || motionInput?.stagedPath) {
+    patchTaskAndUsage(task.id, { input: prepared });
+    cleanupStagedMediaReferences([...imageInputs, motionInput]);
+  }
+  return prepared;
 }
 
 async function executeWorkbenchTask(queuedTask) {
@@ -913,11 +1110,12 @@ async function executeWorkbenchTask(queuedTask) {
       return;
     }
     if (task.kind === "video") {
-      const model = videoModelInfo(request.modelId);
-      const body = await wavespeedFetch(`/${model.endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(videoPayloadFor(request)) }, request);
+      const preparedRequest = await prepareVideoTaskMedia(task, request);
+      const model = videoModelInfo(preparedRequest.modelId);
+      const body = await wavespeedFetch(`/${model.endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(videoPayloadFor(preparedRequest)) }, preparedRequest);
       const immediate = outputUrlsFrom(body);
       const [predictionId] = predictionIdsFromResponse(body);
-      if (predictionId) predictionRequests.set(predictionId, { provider: request.provider, nanoModel: request.nanoModel });
+      if (predictionId) predictionRequests.set(predictionId, { provider: preparedRequest.provider, nanoModel: preparedRequest.nanoModel });
       if (immediate.length) {
         const predictionIds = mergePredictionIds(task.predictionIds, predictionId ? [predictionId] : []);
         patchTaskAndUsage(task.id, {
@@ -931,7 +1129,7 @@ async function executeWorkbenchTask(queuedTask) {
       if (!predictionId) throw new Error("WaveSpeedAI 没有返回任务 ID。");
       const predictionIds = mergePredictionIds(task.predictionIds, [predictionId]);
       patchTaskAndUsage(task.id, { predictionId: predictionIds[0], predictionIds });
-      const urls = await pollPrediction(predictionId, request);
+      const urls = await pollPrediction(predictionId, preparedRequest);
       patchTaskAndUsage(task.id, { status: "done", results: mergeResultUrls(task.results, urls).map((url) => ({ url })), error: "" }, true);
       return;
     }
@@ -944,10 +1142,7 @@ async function executeWorkbenchTask(queuedTask) {
       });
       request.images = persistedImages;
       patchTaskAndUsage(task.id, { input: request });
-      cleanupStagedImageFiles(imageInputs, { root: stagedImagesRoot });
-      for (const image of imageInputs) {
-        if (image?.stagedUploadId) stagedUploadStore.remove(image.stagedUploadId);
-      }
+      cleanupStagedMediaReferences(imageInputs);
     }
     const count = Math.max(1, Math.min(8, Number(request.count) || 1));
     const batches = [];
@@ -1008,13 +1203,30 @@ async function handleStageImage(req, res, owner) {
   }
 }
 
-async function createWorkbenchTask(input, owner) {
+function claimVideoMedia(media, owner, taskIdentifier, uploadStore) {
+  if (!media?.stagedUploadId) return media;
+  const record = uploadStore.get(media.stagedUploadId);
+  if (!record) throw Object.assign(new Error("视频或首尾帧上传不可用，请重新上传。"), { statusCode: 400 });
+  return claimUpload(uploadStore, record, owner, taskIdentifier).media;
+}
+
+function claimVideoReferences(input, owner, taskIdentifier, uploadStore) {
+  return {
+    ...input,
+    referenceImages: (input.referenceImages || []).map((media) => claimVideoMedia(media, owner, taskIdentifier, uploadStore)),
+    ...(input.motionVideo ? { motionVideo: claimVideoMedia(input.motionVideo, owner, taskIdentifier, uploadStore) } : {}),
+  };
+}
+
+async function createWorkbenchTask(input, owner, { uploadStore = stagedUploadStore } = {}) {
   const ownerInfo = ownerIdentity(owner);
   if (input?.kind === "video") {
     const normalized = { ...input, kind: "video" };
     const errors = validateVideoInput(normalized);
     if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
-    return createTaskAndUsage({ id: taskId(), owner: ownerInfo, kind: "video", expectedPredictionCount: 1, status: "queued", input: normalized, results: [], error: "", predictionId: null, predictionIds: [] });
+    const id = taskId();
+    const claimed = claimVideoReferences(normalized, ownerInfo, id, uploadStore);
+    return createTaskAndUsage({ id, owner: ownerInfo, kind: "video", expectedPredictionCount: 1, status: "queued", input: claimed, results: [], error: "", predictionId: null, predictionIds: [] });
   }
   if (input?.mode === "product-cutout") {
     const normalized = normalizeCutoutInput(input);
@@ -1027,7 +1239,7 @@ async function createWorkbenchTask(input, owner) {
       throw Object.assign(new Error("图片上传状态不一致，请重新上传后再试。"), { statusCode: 400 });
     }
     const stagedImages = referencedUploads.length > 0
-      ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: stagedUploadStore })
+      ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: uploadStore })
       : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
     return createTaskAndUsage({
       id,
@@ -1060,7 +1272,7 @@ async function createWorkbenchTask(input, owner) {
     throw Object.assign(new Error("图片上传状态不一致，请重新上传后再试。"), { statusCode: 400 });
   }
   const stagedImages = referencedUploads.length > 0
-    ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: stagedUploadStore })
+    ? claimStagedUploadReferences(images, { owner: ownerInfo.username, accountId: ownerInfo.accountId, taskId: id, store: uploadStore })
     : stageImagesLocally(images, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes });
   return createTaskAndUsage({ id, owner: ownerInfo, kind: "image", expectedPredictionCount: isGrokImageRequest(input) || isKlingImageRequest(input) || isEditMultiRequest(input) ? 1 : Math.max(1, Math.min(8, Number(input.count) || 1)), status: "queued", input: { ...input, kind: "image", images: stagedImages }, results: [], error: "", predictionId: null, predictionIds: [] });
 }
@@ -1221,7 +1433,7 @@ function currentUsageSummary(range = null) {
       trackingStartedAt: usageLedger.snapshot().trackingStartedAt,
       lastSyncedAt: usageLedger.snapshot().lastSyncedAt,
       pendingSyncCount: sync.pendingSyncCount,
-      users: usersStore().users,
+      users: usersWithMcpService(mcpConfig, usersStore().users),
       entries: usageLedger.list(),
       range,
     }),
@@ -1307,6 +1519,74 @@ async function handleProductSuiteDownload(req, res, owner) {
   }
 }
 
+async function handleMcpUploadPut(req, res) {
+  const owner = authenticateMcpRequest(req.headers, mcpConfig);
+  if (!owner) {
+    sendJson(res, 401, { message: "MCP authorization required." });
+    return;
+  }
+  const id = decodeURIComponent(req.url.match(/^\/mcp\/uploads\/([^/?]+)/)?.[1] || "");
+  const record = mcpUploadStore.get(id);
+  const uploadToken = Array.isArray(req.headers["x-upload-token"]) ? req.headers["x-upload-token"][0] : req.headers["x-upload-token"];
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (!record || record.accountId !== owner.accountId || record.owner !== owner.username || record.status !== "pending" || Date.parse(record.expiresAt || "") <= Date.now() || !uploadTokenMatches(record, uploadToken) || (contentType && contentType !== record.mimeType)) {
+    sendJson(res, 404, { message: "上传票据不存在、已过期或不可用。" });
+    return;
+  }
+  try {
+    await writeUploadBody(req, record, { root: mcpUploadsRoot });
+    const ready = markUploadReady(mcpUploadStore, record, { root: mcpUploadsRoot });
+    sendJson(res, 201, { upload: publicUpload(ready, owner) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "媒体上传失败。" });
+  }
+}
+
+async function handleMcpDownload(req, res) {
+  const owner = authenticateMcpRequest(req.headers, mcpConfig);
+  if (!owner) {
+    sendJson(res, 401, { message: "MCP authorization required." });
+    return;
+  }
+  const match = req.url.match(/^\/mcp\/downloads\/(task|suite)\/([^/?]+)/);
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const claims = verifyDownloadToken(mcpConfig.token, url.searchParams.get("token"));
+  if (!match || !claims || claims.accountId !== owner.accountId || claims.kind !== match[1] || claims.id !== decodeURIComponent(match[2])) {
+    sendJson(res, 404, { message: "下载地址不存在或已过期。" });
+    return;
+  }
+  if (claims.kind === "suite") {
+    const suite = productSuiteStore.get(claims.id);
+    if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
+    const entries = PRODUCT_SUITE_SLOTS.map((slot) => ({ name: slot.fileName, url: suite.items.find((item) => item.slot === slot.slot)?.resultUrl })).filter((entry) => entry.url);
+    if (!entries.length) return sendJson(res, 409, { message: "还没有可下载的套图结果。" });
+    try {
+      const archive = await createZipArchive(entries);
+      res.writeHead(200, { "content-type": "application/zip", "content-disposition": `attachment; filename="product-detail-suite-${suite.id}.zip"`, "content-length": archive.length });
+      res.end(archive);
+    } catch (error) {
+      sendJson(res, 502, { message: error instanceof Error ? error.message : "套图下载失败。" });
+    }
+    return;
+  }
+  const task = taskStore.get(claims.id);
+  if (!task || !ownsTask(task, owner)) return sendJson(res, 404, { message: "任务不存在。" });
+  const urls = (task.results || []).map((result) => result.url).filter(Boolean);
+  if (!urls.length) return sendJson(res, 409, { message: "还没有可下载的任务结果。" });
+  if (urls.length === 1) {
+    res.writeHead(302, { location: urls[0], "cache-control": "private, max-age=60" });
+    res.end();
+    return;
+  }
+  try {
+    const archive = await createZipArchive(urls.map((url, index) => ({ name: `result-${index + 1}.png`, url })));
+    res.writeHead(200, { "content-type": "application/zip", "content-disposition": `attachment; filename="task-${task.id}.zip"`, "content-length": archive.length });
+    res.end(archive);
+  } catch (error) {
+    sendJson(res, 502, { message: error instanceof Error ? error.message : "任务下载失败。" });
+  }
+}
+
 function handleProductSuiteDelete(req, res, owner) {
   const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)/)?.[1] || "");
   const suite = productSuiteStore.get(id);
@@ -1359,9 +1639,27 @@ const httpServer = createServer((req, res) => {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-      "access-control-allow-headers": "authorization,content-type",
+      "access-control-allow-headers": "authorization,content-type,x-upload-token",
     });
     res.end();
+    return;
+  }
+
+  if (req.url === "/mcp" && ["GET", "POST", "DELETE"].includes(req.method)) {
+    void handleMcpHttpRequest(req, res, {
+      config: mcpConfig,
+      createServer: (owner) => createMcpServer({ operations: createMcpOperationsFor(owner) }),
+    });
+    return;
+  }
+
+  if (req.url?.match(/^\/mcp\/uploads\/[^/?]+$/) && req.method === "PUT") {
+    void handleMcpUploadPut(req, res);
+    return;
+  }
+
+  if (req.url?.match(/^\/mcp\/downloads\/(task|suite)\/[^/?]+/) && req.method === "GET") {
+    void handleMcpDownload(req, res);
     return;
   }
 

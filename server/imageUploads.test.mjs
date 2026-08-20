@@ -193,6 +193,35 @@ test("claims owner-matched staged uploads once and returns internal file metadat
   }
 });
 
+test("claims an MCP-ready image record stored without the legacy image wrapper", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-mcp-claim-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    store.create({
+      id: "mcp-upload-one",
+      owner: "codex-mcp",
+      accountId: "service:codex-mcp",
+      mediaKind: "image",
+      fileName: "input.png",
+      mimeType: "image/png",
+      size: 3,
+      stagedPath: "mcp-upload-one/input.png",
+      status: "ready",
+      claimedBy: null,
+    });
+
+    assert.deepEqual(claimStagedUploadReferences([{ stagedUploadId: "mcp-upload-one" }], {
+      owner: "codex-mcp",
+      accountId: "service:codex-mcp",
+      taskId: "task-mcp",
+      store,
+    }), [{ stagedPath: "mcp-upload-one/input.png", stagedUploadId: "mcp-upload-one", fileName: "input.png", mimeType: "image/png", size: 3 }]);
+    assert.equal(store.get("mcp-upload-one").claimedBy, "task-mcp");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects legacy or same-name account staged uploads after account migration", () => {
   const root = mkdtempSync(join(tmpdir(), "workbench-identity-staged-"));
   try {

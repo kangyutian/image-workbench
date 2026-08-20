@@ -103,14 +103,18 @@ export function stageImagesLocally(images, { taskId, root, maxBytes }) {
   }
 }
 
-export function fileForStagedImage(image, { root }) {
+export function fileForStagedMedia(image, { root }) {
   if (!image?.stagedPath) throw new Error("Image is not staged locally.");
   const buffer = readFileSync(safeStagedPath(image.stagedPath, root));
   return {
     buffer,
-    fileName: image.fileName || `reference${extensionByMime[image.mimeType] || ".png"}`,
+    fileName: image.fileName || `reference${extensionByMime[image.mimeType] || ".bin"}`,
     mimeType: image.mimeType || "application/octet-stream",
   };
+}
+
+export function fileForStagedImage(image, options) {
+  return fileForStagedMedia(image, options);
 }
 
 export function cleanupStagedImages(taskId, { root }) {
@@ -130,14 +134,21 @@ export function claimStagedUploadReferences(images, { owner, accountId, taskId, 
   const claims = images.map((image) => {
     const uploadId = String(image?.stagedUploadId || "");
     const record = uploadId ? store.get(uploadId) : null;
-    if (!record || !accountId || record.accountId !== accountId || record.owner !== owner || record.claimedBy) {
+    const storedImage = record?.image || (record?.mediaKind === "image" && record?.stagedPath ? {
+      stagedPath: record.stagedPath,
+      stagedUploadId: record.id,
+      fileName: record.fileName,
+      mimeType: record.mimeType,
+      size: record.size,
+    } : null);
+    if (!record || !storedImage || !accountId || record.accountId !== accountId || record.owner !== owner || record.claimedBy) {
       throw Object.assign(new Error("暂存图片不可用或已经被其他任务使用，请重新上传。"), { statusCode: 400 });
     }
-    return { uploadId, record };
+    return { uploadId, record, storedImage };
   });
 
   for (const { uploadId } of claims) store.patch(uploadId, { claimedBy: taskId, claimedAt: new Date().toISOString() });
-  return claims.map(({ record }) => JSON.parse(JSON.stringify(record.image)));
+  return claims.map(({ storedImage }) => JSON.parse(JSON.stringify(storedImage)));
 }
 
 export function purgeExpiredStagedUploads({
