@@ -744,6 +744,18 @@ function App() {
     setBulkError("");
   }
 
+  function changeBatchAspectRatio(nextAspectRatio: string) {
+    setAspectRatio(nextAspectRatio);
+    setTasks((current) => current.map((task) => task.status === "running" ? task : {
+      ...task,
+      aspectRatio: normalizeAspect(task.provider, task.nanoModel, nextAspectRatio),
+      status: "idle",
+      results: [],
+      error: "",
+    }));
+    setBulkError("");
+  }
+
   function applyVideoGlobalSettings() {
     setVideoDrafts((current) => current.map((draft) => ({
       ...draft,
@@ -1206,7 +1218,7 @@ function App() {
 
               {currentAspectOptions.length > 0 && <label className="field">
                   <span>图片比例</span>
-                  <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>
+                  <select value={aspectRatio} onChange={(event) => changeBatchAspectRatio(event.target.value)}>
                     {currentAspectOptions.map((item) => (
                       <option key={item.value} value={item.value}>
                         {item.label}
