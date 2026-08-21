@@ -31,6 +31,7 @@ import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInp
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
 import { fetchWithRetry, isTransientFetchError } from "./server/wavespeedTransport.mjs";
+import { aspectRatiosFor } from "./server/imageAspectRatios.mjs";
 import { authenticateMcpRequest, mcpConfigFromEnv, usersWithMcpService } from "./server/mcpAuth.mjs";
 import { handleMcpHttpRequest } from "./server/mcpHttp.mjs";
 import { createMcpServer } from "./server/mcpServer.mjs";
@@ -250,8 +251,6 @@ const nanoEndpoints = {
   },
 };
 
-const commonAspectRatios = ["1:1", "4:3", "3:4", "16:9", "9:16"];
-const editMultiAspectRatios = ["4:3", "3:4"];
 const commonResolutions = ["1k", "2k", "4k"];
 const fastResolutions = ["2k", "4k"];
 
@@ -262,7 +261,7 @@ function isEditMultiRequest(request = {}) {
 function allowedAspectRatiosFor(request = {}) {
   if (isGrokImageRequest(request)) return grokImageModelInfo(request.nanoModel)?.aspectRatio || [];
   if (isKlingImageRequest(request)) return klingImageModelInfo(request.nanoModel)?.aspectRatio || [];
-  return isEditMultiRequest(request) ? editMultiAspectRatios : commonAspectRatios;
+  return aspectRatiosFor(request);
 }
 
 function allowedResolutionsFor(request = {}) {

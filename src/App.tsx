@@ -81,6 +81,24 @@ const aspectOptions = [
   { value: "9:16", label: "9:16 竖屏" },
 ];
 
+const image2AspectOptions = [
+  { value: "1:1", label: "1:1 方图" },
+  { value: "1:2", label: "1:2 超长竖图" },
+  { value: "2:1", label: "2:1 超宽横图" },
+  { value: "1:3", label: "1:3 极长竖图" },
+  { value: "3:1", label: "3:1 极宽横图" },
+  { value: "2:3", label: "2:3 竖图" },
+  { value: "3:2", label: "3:2 横图" },
+  { value: "3:4", label: "3:4 竖图" },
+  { value: "4:3", label: "4:3 横图" },
+  { value: "4:5", label: "4:5 竖图" },
+  { value: "5:4", label: "5:4 横图" },
+  { value: "9:16", label: "9:16 竖屏" },
+  { value: "16:9", label: "16:9 宽屏" },
+  { value: "9:21", label: "9:21 超长竖屏" },
+  { value: "21:9", label: "21:9 超宽屏" },
+];
+
 const editMultiAspectOptions = [
   { value: "4:3", label: "4:3 横图" },
   { value: "3:4", label: "3:4 竖图" },
@@ -246,6 +264,7 @@ function defaultModelForProvider(provider: ProviderId, current: NanoModelId) {
 function aspectOptionsFor(provider: ProviderId, nanoModel: NanoModelId) {
   if (isGrokQuality(provider, nanoModel)) return grokQualityAspectOptions;
   if (provider === "grok") return [];
+  if (provider === "image2") return image2AspectOptions;
   return isNanoEditMulti(provider, nanoModel) ? editMultiAspectOptions : aspectOptions;
 }
 
