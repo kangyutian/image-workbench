@@ -60,8 +60,7 @@ const productSuiteSlots: Array<{ slot: ProductSuiteSlot; label: string; eyebrow:
   { slot: "model-front", label: "欧美模特正面上身图", eyebrow: "02 · Model Front", template: "欧美模特正面站姿上身展示商品，完整展示商品版型、颜色、材质和穿着效果。" },
   { slot: "model-angle", label: "欧美模特角度上身图", eyebrow: "03 · Model Angle", template: "同一位欧美模特以三分之二角度或自然侧身姿态展示商品，突出轮廓、剪裁和版型。" },
   { slot: "model-back", label: "欧美模特背面上身展示图", eyebrow: "04 · Model Back", template: "同一位欧美模特背对镜头展示商品背面，完整展示后背结构、肩带、扣位、轮廓和版型。" },
-  { slot: "model-scene", label: "欧美模特场景上身图", eyebrow: "05 · Model Scene", template: "同一位欧美模特自然动作和商业电商构图上身展示商品，商品仍是视觉主体。" },
-  { slot: "product-detail", label: "产品细节特写图", eyebrow: "06 · Product Detail", template: "商品局部高清细节特写，展示材质、纹理、缝线、工艺或功能细节。" },
+  { slot: "product-detail", label: "产品细节特写图", eyebrow: "05 · Product Detail", template: "商品局部高清细节特写，展示材质、纹理、缝线、工艺或功能细节。" },
 ];
 
 const productSuiteGenderLabels: Record<ProductSuiteGender, string> = { female: "女性", male: "男性" };

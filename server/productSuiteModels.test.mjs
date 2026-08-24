@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./productSuiteModels.mjs";
 
-test("product suite defaults to female slim, white background, Kling O3 and six prompts", () => {
+test("product suite defaults to female slim, white background, Kling O3 and five prompts", () => {
   const input = normalizeProductSuiteInput({});
   assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "slim", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
   const prompts = buildProductSuitePrompts(input);
   assert.deepEqual(Object.keys(prompts), PRODUCT_SUITE_SLOTS.map((item) => item.slot));
-  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back", "model-scene", "product-detail"]);
-  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.fileName), ["01-product-3d.jpg", "02-model-front.jpg", "03-model-angle.jpg", "04-model-back.jpg", "05-model-scene.jpg", "06-product-detail.jpg"]);
+  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back", "product-detail"]);
+  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.fileName), ["01-product-3d.jpg", "02-model-front.jpg", "03-model-angle.jpg", "04-model-back.jpg", "05-product-detail.jpg"]);
+  assert.equal(Object.hasOwn(prompts, "model-scene"), false);
   assert.match(prompts["model-back"], /model-back|背面|背对镜头/);
   assert.match(prompts["model-front"], /女性/);
   assert.match(prompts["model-front"], /偏瘦/);
+  assert.match(prompts["model-front"], /25至35岁/);
+  assert.match(prompts["model-front"], /用户上传的商品图片/);
+  assert.match(prompts["model-angle"], /90度侧身/);
+  assert.match(prompts["model-back"], /用户上传的商品图片/);
 });
 
 test("product suite accepts independent gender and body choices and custom background", () => {

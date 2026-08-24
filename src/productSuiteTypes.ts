@@ -1,4 +1,4 @@
-export type ProductSuiteSlot = "product-3d" | "model-front" | "model-angle" | "model-back" | "model-scene" | "product-detail";
+export type ProductSuiteSlot = "product-3d" | "model-front" | "model-angle" | "model-back" | "product-detail";
 export type ProductSuiteStatus = "queued" | "running" | "partial" | "done" | "error";
 export type ProductSuiteGender = "female" | "male";
 export type ProductSuiteBodyType = "slim" | "muscular" | "plus" | "curvy" | "hourglass";
