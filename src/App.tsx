@@ -17,8 +17,8 @@ import {
 } from "lucide-react";
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
-import { createProductSuite, loadProductSuites, productSuiteZipUrl, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
-import type { ProductSuite, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteMedia, ProductSuiteSlot } from "./productSuiteTypes";
+import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
+import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
@@ -64,7 +64,10 @@ const productSuiteSlots: Array<{ slot: ProductSuiteSlot; label: string; eyebrow:
 ];
 
 const productSuiteGenderLabels: Record<ProductSuiteGender, string> = { female: "女性", male: "男性" };
-const productSuiteBodyLabels: Record<ProductSuiteBodyType, string> = { slim: "瘦", muscular: "肌肉", plus: "胖", curvy: "丰满", hourglass: "身体曲线好" };
+const productSuiteBodyLabels: Record<ProductSuiteBodyType, string> = { slim: "纤细偏瘦", balanced: "健康匀称", athletic: "运动型", muscular: "肌肉型", plus: "丰润偏胖", curvy: "丰满曲线", hourglass: "沙漏曲线" };
+const productSuiteAgeLabels: Record<ProductSuiteAgeRange, string> = { "18-24": "18–24岁（成年）", "25-35": "25–35岁", "36-45": "36–45岁", "46-55": "46–55岁", "56-plus": "56岁以上" };
+const productSuiteHairLabels: Record<ProductSuiteHairStyle, string> = { "natural-loose": "蓬松自然披发", "long-straight": "长发直发披肩", "long-wavy": "长发自然卷", "low-ponytail": "低马尾", "high-ponytail": "高马尾", short: "短发", bob: "中短波波头" };
+const productSuiteSkinLabels: Record<ProductSuiteSkinTone, string> = { natural: "自然真实肤色", fair: "自然浅肤色", medium: "自然中等肤色", tan: "自然小麦肤色", deep: "自然深肤色" };
 
 const modeLabels: Record<GenerationMode, string> = {
   "text-to-image": "文生图",
@@ -413,16 +416,19 @@ function App() {
   const [suiteBackground, setSuiteBackground] = useState<ProductSuiteMedia | null>(null);
   const [suiteModel, setSuiteModel] = useState<"kling" | "nanobanana">("kling");
   const [suiteGender, setSuiteGender] = useState<ProductSuiteGender>("female");
-  const [suiteBodyType, setSuiteBodyType] = useState<ProductSuiteBodyType>("slim");
+  const [suiteBodyType, setSuiteBodyType] = useState<ProductSuiteBodyType>("balanced");
+  const [suiteAgeRange, setSuiteAgeRange] = useState<ProductSuiteAgeRange>("25-35");
+  const [suiteHairStyle, setSuiteHairStyle] = useState<ProductSuiteHairStyle>("natural-loose");
+  const [suiteSkinTone, setSuiteSkinTone] = useState<ProductSuiteSkinTone>("natural");
   const [suiteBackgroundMode, setSuiteBackgroundMode] = useState<"white" | "custom">("white");
   const [suiteProductName, setSuiteProductName] = useState("");
   const [suiteSellingPoints, setSuiteSellingPoints] = useState("");
-  const [suiteStyle, setSuiteStyle] = useState("高级电商摄影，真实、干净、突出商品");
-  const [suitePrompts, setSuitePrompts] = useState<Partial<Record<ProductSuiteSlot, string>>>({});
   const [suiteError, setSuiteError] = useState("");
   const [suiteSubmitting, setSuiteSubmitting] = useState(false);
+  const [suiteRecoveringId, setSuiteRecoveringId] = useState("");
   const suiteImageInputRef = useRef<HTMLInputElement | null>(null);
   const suiteBackgroundInputRef = useRef<HTMLInputElement | null>(null);
+  const suiteRecoveryInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [isDraggingTask, setIsDraggingTask] = useState("");
   const bulkPromptRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({});
@@ -523,11 +529,13 @@ function App() {
         model: suiteModel,
         gender: suiteGender,
         bodyType: suiteBodyType,
+        ageRange: suiteAgeRange,
+        hairStyle: suiteHairStyle,
+        skinTone: suiteSkinTone,
         backgroundMode: suiteBackgroundMode,
         productName: suiteProductName,
         sellingPoints: suiteSellingPoints,
-        style: suiteStyle,
-        prompts: suitePrompts,
+        prompts: {},
       });
       setProductSuites((current) => [suite, ...current.filter((item) => item.id !== suite.id)]);
       window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
@@ -544,6 +552,20 @@ function App() {
       setProductSuites((current) => [next, ...current.filter((item) => item.id !== next.id)]);
     } catch (error) {
       setSuiteError(error instanceof Error ? error.message : "单张图片重试失败。");
+    }
+  }
+
+  async function recoverProductSuiteBackground(suiteId: string, file: File) {
+    setSuiteRecoveringId(suiteId);
+    setSuiteError("");
+    try {
+      const background = await readSuiteFile(file);
+      const next = await recoverProductSuiteBackgroundApi(suiteId, background);
+      setProductSuites((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "背景补传失败。");
+    } finally {
+      setSuiteRecoveringId("");
     }
   }
 
@@ -1003,7 +1025,7 @@ function App() {
   function renderPrintExtractionPanel() {
     return (
       <section className="panel print-create-panel">
-        <div className="batch-heading">
+        <div className="batch-heading image-batch-command-row">
           <div>
             <p className="eyebrow">Print Extract</p>
             <h2>印花提取</h2>
@@ -1075,9 +1097,9 @@ function App() {
               <input ref={suiteImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteImage).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
             </div>
             <div className="suite-background-card">
-              <div className="suite-section-heading"><strong>统一背景</strong><span>默认纯白，也可上传自定义背景</span></div>
+              <div className="suite-section-heading"><strong>统一背景</strong><span>默认浅灰偏白色无缝摄影棚背景，也可上传自定义背景</span></div>
               <div className="background-choice" role="radiogroup" aria-label="套图统一背景">
-                <button type="button" className={suiteBackgroundMode === "white" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("white")}><span className="white-preview" />纯白背景</button>
+                <button type="button" className={suiteBackgroundMode === "white" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("white")}><span className="white-preview" />浅灰偏白背景</button>
                 <button type="button" className={suiteBackgroundMode === "custom" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("custom")}><span className="checker-preview" />自定义背景</button>
               </div>
               {suiteBackground && <div className="suite-background-preview"><img src={suiteBackground.dataUrl} alt="自定义背景" /><button className="ghost" type="button" onClick={() => setSuiteBackground(null)}>移除背景</button></div>}
@@ -1090,11 +1112,13 @@ function App() {
               <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as "kling" | "nanobanana")}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option></select></label>
               <label className="field"><span>模特性别</span><select value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特体型</span><select value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="field"><span>模特年龄</span><select value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="field"><span>模特发型</span><select value={suiteHairStyle} onChange={(event) => setSuiteHairStyle(event.target.value as ProductSuiteHairStyle)}>{Object.entries(productSuiteHairLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="field"><span>模特肤色</span><select value={suiteSkinTone} onChange={(event) => setSuiteSkinTone(event.target.value as ProductSuiteSkinTone)}>{Object.entries(productSuiteSkinLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             </div>
             <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
             <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
-            <label className="field"><span>整体视觉风格</span><input value={suiteStyle} onChange={(event) => setSuiteStyle(event.target.value)} /></label>
-            <div className="suite-submit-row"><div><strong>自动抠图 + 5 张生成</strong><span>每张图片独立处理，失败后可单张重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
+            <div className="suite-submit-row"><div><strong>自动抠图 + 5 张生成</strong><span>三视图共享同一位模特身份，失败后可单独重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
           </div>
         </div>
         {suiteError && <div className="error-box">{suiteError}</div>}
@@ -1106,8 +1130,8 @@ function App() {
     return <section className="product-suite-queue">
       <div className="mode-banner"><div><p className="eyebrow">Suite Queue</p><h2>商品套图任务</h2></div><span>固定 5 张，统一背景和模型；每张文案可独立编辑。</span></div>
       {productSuites.length === 0 ? <div className="panel empty-state task-empty-state"><ImagePlus size={30} /><strong>还没有商品套图任务</strong><span>上传商品图并开始生成后，结果会显示在这里。</span></div> : <div className="product-suite-list">{productSuites.map((suite) => <article className="panel product-suite-task-card" key={suite.id}>
-        <div className="suite-task-heading"><div><p className="eyebrow">Product Detail Suite</p><h3>{suite.input.productName || "未命名商品"}</h3><span className={`status-pill status-${suite.status === "done" ? "done" : suite.status === "error" ? "error" : suite.status === "partial" ? "error" : "running"}`}>{suite.status === "queued" ? "排队中" : suite.status === "running" ? "生成中" : suite.status === "partial" ? "部分完成" : suite.status === "done" ? "已完成" : "失败"}</span></div>{suite.items.some((item) => item.resultUrl) && <a className="secondary" href={productSuiteZipUrl(suite.id)}><Download size={16} />下载整套 ZIP</a>}</div>
-        <div className="product-suite-item-grid">{productSuiteSlots.map((definition) => { const item = suite.items.find((candidate) => candidate.slot === definition.slot); if (!item) return null; return <article className="product-suite-item-card" key={item.slot}><div className="suite-item-heading"><div><p className="eyebrow">{definition.eyebrow}</p><h4>{definition.label}</h4></div><span className={`status-pill status-${item.status === "done" ? "done" : item.status === "error" ? "error" : "running"}`}>{item.status === "queued" ? "排队中" : item.status === "running" ? "生成中" : item.status === "done" ? "已完成" : "失败"}</span></div><textarea value={item.prompt} onChange={(event) => setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt: event.target.value } : currentItem) } : currentSuite))} onBlur={(event) => void saveProductSuitePrompt(suite.id, item.slot, event.target.value)} rows={4} /><div className="suite-item-actions"><button className="ghost" type="button" onClick={() => { const prompt = item.defaultPrompt || item.prompt; setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt } : currentItem) } : currentSuite)); void saveProductSuitePrompt(suite.id, item.slot, prompt); }}><RefreshCcw size={15} />恢复默认文案</button>{item.resultUrl && <a className="secondary" href={item.resultUrl} target="_blank" rel="noreferrer"><Download size={15} />下载图片</a>}{item.status === "error" && <button className="ghost" type="button" onClick={() => void retryProductSuiteSlot(suite.id, item.slot)}><RefreshCcw size={15} />单张重试</button>}</div>{item.resultUrl ? <img className="suite-result-preview" src={item.resultUrl} alt={definition.label} /> : <div className="empty-state suite-result-empty"><Loader2 className={item.status === "running" || item.status === "queued" ? "spin" : ""} size={24} /><span>{item.status === "error" ? item.error || "生成失败" : item.status === "queued" ? "等待共享执行槽位" : "正在生成"}</span></div>}</article>; })}</div>
+        <div className="suite-task-heading"><div><p className="eyebrow">Product Detail Suite</p><h3>{suite.input.productName || "未命名商品"}</h3><span className={`status-pill status-${suite.status === "done" ? "done" : suite.status === "error" ? "error" : suite.status === "partial" ? "error" : "running"}`}>{suite.status === "queued" ? "排队中" : suite.status === "running" ? "生成中" : suite.status === "partial" ? "部分完成" : suite.status === "done" ? "已完成" : "失败"}</span></div><div className="suite-task-heading-actions">{suite.recovery?.canRecoverBackground && <><input ref={(element) => { suiteRecoveryInputRefs.current[suite.id] = element; }} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void recoverProductSuiteBackground(suite.id, file); event.currentTarget.value = ""; }} /><button className="secondary" type="button" disabled={suiteRecoveringId === suite.id} onClick={() => suiteRecoveryInputRefs.current[suite.id]?.click()}>{suiteRecoveringId === suite.id ? <Loader2 className="spin" size={16} /> : <UploadCloud size={16} />}补传背景并继续</button></>}{suite.items.some((item) => item.resultUrl) && <a className="secondary" href={productSuiteZipUrl(suite.id)}><Download size={16} />下载整套 ZIP</a>}</div></div>
+        <div className="product-suite-item-grid">{productSuiteSlots.map((definition) => { const item = suite.items.find((candidate) => candidate.slot === definition.slot); if (!item) return null; return <article className="product-suite-item-card" key={item.slot}><div className="suite-item-heading"><div><p className="eyebrow">{definition.eyebrow}</p><h4>{definition.label}</h4></div><span className={`status-pill status-${item.status === "done" ? "done" : item.status === "error" ? "error" : "running"}`}>{item.status === "queued" ? "排队中" : item.status === "running" ? "生成中" : item.status === "done" ? "已完成" : "失败"}</span></div><textarea value={item.prompt} onChange={(event) => setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt: event.target.value } : currentItem) } : currentSuite))} onBlur={(event) => void saveProductSuitePrompt(suite.id, item.slot, event.target.value)} rows={4} /><div className="suite-item-actions"><button className="ghost" type="button" onClick={() => { const prompt = item.defaultPrompt || item.prompt; setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt } : currentItem) } : currentSuite)); void saveProductSuitePrompt(suite.id, item.slot, prompt); }}><RefreshCcw size={15} />恢复默认文案</button>{item.resultUrl && <a className="secondary" href={item.resultUrl} target="_blank" rel="noreferrer"><Download size={15} />下载图片</a>}{item.status === "error" && <button className="ghost" type="button" onClick={() => void retryProductSuiteSlot(suite.id, item.slot)}><RefreshCcw size={15} />{item.slot === "model-front" ? "重生成三视图" : "单张重试"}</button>}</div>{item.resultUrl ? <img className="suite-result-preview" src={item.resultUrl} alt={definition.label} /> : <div className="empty-state suite-result-empty"><Loader2 className={item.status === "running" || item.status === "queued" ? "spin" : ""} size={24} /><span>{item.status === "error" ? item.error || "生成失败" : item.status === "queued" ? "等待共享执行槽位" : "正在生成"}</span></div>}</article>; })}</div>
       </article>)}</div>}
     </section>;
   }
@@ -1115,8 +1139,9 @@ function App() {
   const creationTitle = creationKind === "image" ? "图片创作" : creationKind === "video" ? "视频创作" : creationKind === "print" ? "印花提取" : creationKind === "suite" ? "商品套图" : "产品抠图";
 
   return (
-    <main className="app-shell">
-      <header className="workbench-topbar">
+    <main className={`app-shell creation-${creationKind}`}>
+      <header className={`workbench-topbar ${creationKind === "image" ? "image-workbench-topbar" : ""}`}>
+        {creationKind === "image" && <div className="image-workbench-brand"><span className="image-workbench-brand-mark"><ImagePlus size={14} /></span><strong>Batch Desk</strong></div>}
         <nav className="workbench-nav" aria-label="创作类型">
           <button className={creationKind === "image" ? "active" : ""} aria-pressed={creationKind === "image"} onClick={() => setCreationKind("image")} type="button">图片创作</button>
           <button className={creationKind === "video" ? "active" : ""} aria-pressed={creationKind === "video"} onClick={() => setCreationKind("video")} type="button">视频创作</button>
@@ -1126,14 +1151,14 @@ function App() {
         </nav>
         <div className="workbench-top-actions"><span>使用指南</span><span className="balance-badge">余额&nbsp; 1,250</span><span className="account-orb">W</span></div>
       </header>
-      <div className="workbench-layout">
+      <div className={`workbench-layout ${creationKind === "image" ? "image-workbench-layout" : ""}`}>
         <div className="workbench-main">
           <header className="topbar page-heading">
             <div><p className="eyebrow">AI Workbench</p><h1>{creationTitle}</h1><span className="page-subtitle">多任务并行创作，结果统一管理</span></div>
             <div className="status-strip"><span>{tasks.length + videoTasks.length + cutoutTasks.length}/{MAX_TASKS} 个任务</span><span>{resultCount} 张结果图</span><span>运行中 {activeImageCount + activeVideoCount}</span></div>
           </header>
 
-      {creationKind === "image" ? <section className="panel batch-panel">
+      {creationKind === "image" ? <section className="image-batch-desk">
         <div className="batch-heading">
           <div>
             <p className="eyebrow">Batch</p>
@@ -1163,8 +1188,9 @@ function App() {
           </div>
         </div>
 
-        <div className="batch-grid">
-          <div className="batch-prompt">
+        <div className="batch-grid image-batch-toolbar">
+          <details className="batch-prompt image-bulk-prompt">
+            <summary>批量提示词<span>展开后可同步到所有任务卡</span></summary>
             <label className="field">
               <span>批量提示词</span>
               <textarea
@@ -1178,7 +1204,7 @@ function App() {
                 rows={5}
               />
             </label>
-          </div>
+          </details>
 
           <div className="batch-controls">
             <label className="field global-model-field"><span>模型</span><select value={`${provider}:${nanoModel}`} onChange={(event) => { const [nextProvider, nextModel] = event.target.value.split(":") as [ProviderId, NanoModelId]; changeBatchProvider(nextProvider); if (nextProvider !== "image2") changeBatchNanoModel(nextModel); }}><option value="image2:gpt-image-2">Image 2</option>{(["nanobanana", "grok", "kling"] as ProviderId[]).flatMap((item) => imageModelsForProvider(item).map((model) => <option key={`${item}:${model.id}`} value={`${item}:${model.id}`}>{model.label}</option>))}</select></label>
@@ -1264,7 +1290,7 @@ function App() {
           </div>
         </div>
 
-        <div className="batch-foot">
+        <div className="batch-foot image-batch-footer">
           <span>全局设置可应用到所有待生成任务卡；每张卡仍可单独覆盖模型、提示词和参考图。</span>
           {bulkError && <strong>{bulkError}</strong>}
         </div>
@@ -1303,7 +1329,7 @@ function App() {
         {cutoutError && <div className="error-box">{cutoutError}</div>}
       </section>}
 
-      <section className="task-workspace">
+      <section className={`task-workspace ${creationKind === "image" ? "image-task-workspace" : ""}`}>
         <div className="mode-banner">
           <div>
             <p className="eyebrow">Task Queue</p>
@@ -1319,7 +1345,7 @@ function App() {
             <span>先点击顶部“添加任务”，最多添加 10 个 task。</span>
           </div>
         ) : (
-          <div className="task-list">
+          <div className={`task-list ${creationKind === "image" ? "image-task-grid" : ""}`}>
             {tasks.map((task, taskIndex) => {
               const mode = resolveMode(task.images.length);
               const totalSize = task.images.reduce((sum, image) => sum + (image.size ?? 0), 0);

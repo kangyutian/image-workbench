@@ -273,6 +273,26 @@ test("cleans every unique upload directory referenced by a completed task", () =
   }
 });
 
+test("cleans one staged file without deleting sibling media from the same task", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-clean-one-file-"));
+  try {
+    stageImagesLocally([
+      { id: "product", fileName: "product.png", mimeType: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" },
+      { id: "background", fileName: "background.png", mimeType: "image/png", size: 2, dataUrl: "data:image/png;base64,BAU=" },
+    ], { taskId: "suite-one", root, maxBytes: 1024 });
+
+    cleanupStagedImageFiles([{ stagedPath: "suite-one/0.png" }], { root });
+    assert.throws(() => readFileSync(join(root, "suite-one", "0.png")));
+    assert.deepEqual(fileForStagedImage({ stagedPath: "suite-one/1.png", fileName: "background.png", mimeType: "image/png" }, { root }), {
+      buffer: Buffer.from([4, 5]),
+      fileName: "background.png",
+      mimeType: "image/png",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("purges abandoned uploads while retaining the retry window for claimed files", () => {
   const root = mkdtempSync(join(tmpdir(), "image-workbench-purge-"));
   try {

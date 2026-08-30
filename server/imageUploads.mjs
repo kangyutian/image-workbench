@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 
 const extensionByMime = {
@@ -122,12 +122,19 @@ export function cleanupStagedImages(taskId, { root }) {
 }
 
 export function cleanupStagedImageFiles(images, { root }) {
-  const directories = new Set(
+  const files = new Set(
     images
       .filter((image) => image?.stagedPath)
-      .map((image) => dirname(safeStagedPath(image.stagedPath, root))),
+      .map((image) => safeStagedPath(image.stagedPath, root)),
   );
-  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+  for (const file of files) {
+    rmSync(file, { force: true });
+    try {
+      rmdirSync(dirname(file));
+    } catch {
+      // The directory may still contain another staged input.
+    }
+  }
 }
 
 export function claimStagedUploadReferences(images, { owner, accountId, taskId, store }) {

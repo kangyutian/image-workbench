@@ -27,7 +27,8 @@ import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { normalizeUsageRange, summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
 import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
-import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { canRecoverProductSuiteBackground, cutoutResultUrlForSuite } from "./server/productSuiteRecovery.mjs";
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
 import { fetchWithRetry, isTransientFetchError } from "./server/wavespeedTransport.mjs";
@@ -785,7 +786,10 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
 }
 
 function publicSuiteResult(suite) {
-  return publicProductSuite(suite);
+  const result = publicProductSuite(suite);
+  const cutoutUrl = suite.productImageUrl || cutoutResultUrlForSuite(suite.id, taskStore.list());
+  result.recovery = { canRecoverBackground: canRecoverProductSuiteBackground(suite, cutoutUrl) };
+  return result;
 }
 
 async function resolvePrediction(batch, request) {
@@ -793,12 +797,12 @@ async function resolvePrediction(batch, request) {
   return pollPrediction(batch.id, request);
 }
 
-async function runSuiteImage(slot, suite, productUrl, backgroundUrl) {
+async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageUrl = "") {
   const request = {
     kind: "image",
     provider: suite.input.model === "nanobanana" ? "nanobanana" : "kling",
     nanoModel: suite.input.model === "nanobanana" ? "nano-banana-pro" : "kling-image-o3-edit",
-    prompt: suite.items.find((item) => item.slot === slot.slot)?.prompt || "",
+    prompt: productSuiteGenerationPrompt(slot.slot, suite.input, suite.items.find((item) => item.slot === slot.slot)?.prompt || ""),
     images: [],
     aspectRatio: "4:5",
     count: 1,
@@ -806,8 +810,9 @@ async function runSuiteImage(slot, suite, productUrl, backgroundUrl) {
     quality: "high",
   };
   const childId = taskId();
-  const references = [productUrl, ...(backgroundUrl ? [backgroundUrl] : [])];
-  const child = taskStore.create({ id: childId, owner: suite.owner, accountId: suite.accountId, kind: "image", suiteId: suite.id, slot: slot.slot, status: "running", input: { ...request, images: references.map((url, index) => ({ id: `${childId}-${index}`, fileName: index === 0 ? "product-cutout.png" : "suite-background.png", dataUrl: url, mimeType: "image/png" })) }, results: [], error: "", predictionId: null, predictionIds: [] });
+  const referenceImages = productSuiteReferenceImages(slot.slot, productUrl, backgroundUrl, frontImageUrl);
+  const references = referenceImages.map(({ url }) => url);
+  const child = taskStore.create({ id: childId, owner: suite.owner, accountId: suite.accountId, kind: "image", suiteId: suite.id, slot: slot.slot, status: "running", input: { ...request, images: referenceImages.map(({ url, fileName }, index) => ({ id: `${childId}-${index}`, fileName, dataUrl: url, mimeType: "image/png" })) }, results: [], error: "", predictionId: null, predictionIds: [] });
   recordUsageTask(child);
   try {
     const batch = await submitOnePrediction(request, references);
@@ -819,10 +824,13 @@ async function runSuiteImage(slot, suite, productUrl, backgroundUrl) {
     const done = taskStore.patch(childId, { status: "done", results: urls.map((url) => ({ url })), error: "" });
     recordUsageTask(done, true);
     productSuiteStore.patchItem(suite.id, slot.slot, { status: "done", resultUrl: urls[0] || "", error: "" });
+    return urls[0] || "";
   } catch (error) {
     const failed = taskStore.patch(childId, { status: "error", error: error instanceof Error ? error.message : "生成失败。" });
     recordUsageTask(failed, true);
     productSuiteStore.patchItem(suite.id, slot.slot, { status: "error", error: failed.error });
+    console.error("[product-suite] image generation failed", JSON.stringify({ suiteId: suite.id, slot: slot.slot, stage: "image-generation", error: failed.error }));
+    return "";
   }
 }
 
@@ -834,6 +842,7 @@ async function executeProductSuiteTask(queuedTask) {
     taskStore.patch(suiteTask.id, { status: "running" });
     productSuiteStore.patch(suite.id, { status: "running" });
     let productUrl = suite.productImageUrl || "";
+    let stage = "cutout";
     if (!productUrl) {
       const cutoutRequest = { mode: "product-cutout", provider: "bria", nanoModel: "bria-extract-object", prompt: "main product", backgroundMode: "transparent", images: [suite.sourceImage] };
       const cutoutTaskId = taskId();
@@ -849,26 +858,47 @@ async function executeProductSuiteTask(queuedTask) {
         [productUrl] = await resolvePrediction(cutout, cutoutRequest);
         const completedCutout = taskStore.patch(cutoutTaskId, { status: "done", results: [{ url: productUrl }], error: "" });
         recordUsageTask(completedCutout, true);
+        productSuiteStore.patch(suite.id, { productImageUrl: productUrl });
         cleanupStagedMediaReferences([suite.sourceImage]);
       } catch (error) {
         const failedCutout = taskStore.patch(cutoutTaskId, { status: "error", error: error instanceof Error ? error.message : "抠图失败。" });
         recordUsageTask(failedCutout, true);
+        console.error("[product-suite] cutout failed", JSON.stringify({ suiteId: suite.id, stage: "cutout", error: failedCutout.error }));
         throw error;
       }
     }
+    stage = "background-upload";
     let backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? suite.backgroundUrl || "" : "";
     if (!backgroundUrl && suite.input.backgroundMode === "custom" && suite.backgroundImage) {
       backgroundUrl = await uploadMedia(suite.backgroundImage, "image", { provider: "kling", nanoModel: "kling-image-o3-edit" });
+      productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
       cleanupStagedMediaReferences([suite.backgroundImage]);
     }
     productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
-    const targetItems = queuedTask.suiteRetrySlot ? suite.items.filter((item) => item.slot === queuedTask.suiteRetrySlot) : suite.items.filter((item) => item.status !== "done");
-    await Promise.all(targetItems.map((item) => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl)));
+    stage = "image-generation";
+    const currentSuite = productSuiteStore.get(suite.id);
+    const plan = productSuiteGenerationPlan(currentSuite.items, queuedTask.suiteRetrySlot || "");
+    const runItem = (item, frontImageUrl = "") => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl, frontImageUrl);
+    await Promise.all(plan.independent.map((item) => runItem(item)));
+
+    let frontImageUrl = productSuiteStore.get(suite.id)?.items.find((item) => item.slot === "model-front")?.resultUrl || "";
+    if (plan.front) frontImageUrl = await runItem(plan.front);
+
+    if (plan.identityDependent.length > 0) {
+      if (!frontImageUrl) {
+        const dependencyError = "正面模特图生成失败，侧面和背面暂不生成。请先重试正面图。";
+        for (const item of plan.identityDependent) productSuiteStore.patchItem(suite.id, item.slot, { status: "error", error: dependencyError });
+      } else {
+        await Promise.all(plan.identityDependent.map((item) => runItem(item, frontImageUrl)));
+      }
+    }
     const finished = productSuiteStore.get(suite.id);
-    const status = suiteStatusForItems(finished.items);
+    const activeSlots = new Set(PRODUCT_SUITE_SLOTS.map(({ slot }) => slot));
+    const status = suiteStatusForItems(finished.items.filter((item) => activeSlots.has(item.slot)));
     productSuiteStore.patch(suite.id, { status });
     taskStore.patch(suiteTask.id, { status: status === "done" ? "done" : "error", error: status === "partial" ? "部分图片生成失败，请重试失败画面。" : "" });
   } catch (error) {
+    console.error("[product-suite] task failed", JSON.stringify({ suiteId: suite.id, stage, error: error instanceof Error ? error.message : "商品套图生成失败。" }));
     productSuiteStore.patch(suite.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
     taskStore.patch(suiteTask.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
   }
@@ -1462,6 +1492,39 @@ async function handleProductSuiteCreate(req, res, owner) {
   }
 }
 
+async function handleProductSuiteRecoverBackground(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)\/recover-background$/)?.[1] || "");
+  const suite = productSuiteStore.get(id);
+  if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
+  const productUrl = suite.productImageUrl || cutoutResultUrlForSuite(id, taskStore.list());
+  if (!canRecoverProductSuiteBackground(suite, productUrl)) {
+    return sendJson(res, 409, { message: "当前套图没有可恢复的抠图结果，请重新创建套图任务。" });
+  }
+
+  const stagingId = taskId();
+  try {
+    const body = await readJsonBody(req);
+    const backgroundImage = stageImagesLocally([body?.backgroundImage], {
+      taskId: stagingId,
+      root: stagedImagesRoot,
+      maxBytes: maxImportedImageBytes,
+    })[0];
+    const updated = productSuiteStore.patch(id, {
+      status: "queued",
+      error: "",
+      productImageUrl: productUrl,
+      backgroundImage,
+      backgroundUrl: "",
+    });
+    const task = taskStore.create({ id: taskId(), owner: owner.username, accountId: owner.accountId, kind: "suite", suiteId: id, status: "queued", results: [], error: "" });
+    taskScheduler.enqueue(task);
+    sendJson(res, 201, { suite: publicSuiteResult(updated) });
+  } catch (error) {
+    cleanupStagedImages(stagingId, { root: stagedImagesRoot });
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "背景补传失败。" });
+  }
+}
+
 function handleProductSuiteList(res, owner) {
   sendJson(res, 200, { suites: productSuiteStore.forOwner(owner).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicSuiteResult) });
 }
@@ -1496,7 +1559,8 @@ function handleProductSuiteRetry(req, res, owner) {
   const suite = productSuiteStore.get(id);
   if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
   if (!PRODUCT_SUITE_SLOTS.some((item) => item.slot === slot)) return sendJson(res, 400, { message: "无效的商品套图画面。" });
-  productSuiteStore.patchItem(id, slot, { status: "queued", resultUrl: "", error: "" });
+  const retrySlots = slot === "model-front" ? ["model-front", "model-angle", "model-back"] : [slot];
+  for (const retrySlot of retrySlots) productSuiteStore.patchItem(id, retrySlot, { status: "queued", resultUrl: "", error: "" });
   const task = taskStore.create({ id: taskId(), owner: owner.username, accountId: owner.accountId, kind: "suite", suiteId: id, suiteRetrySlot: slot, status: "queued", results: [], error: "" });
   productSuiteStore.patch(id, { status: "queued" });
   taskScheduler.enqueue(task);
@@ -1592,7 +1656,7 @@ function handleProductSuiteDelete(req, res, owner) {
   if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
   productSuiteStore.remove(id);
   for (const task of taskStore.list().filter((item) => item.suiteId === id)) taskStore.remove(task.id);
-  if (suite.sourceImage?.stagedPath) cleanupStagedImages(id, { root: stagedImagesRoot });
+  cleanupStagedMediaReferences([suite.sourceImage, suite.backgroundImage]);
   sendJson(res, 200, { ok: true });
 }
 
@@ -1758,6 +1822,12 @@ const httpServer = createServer((req, res) => {
   if (req.url?.match(/^\/workbench\/product-suites\/[^/]+\/retry\/[^/?]+/) && req.method === "POST") {
     const user = requireUser(req, res);
     if (user) handleProductSuiteRetry(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suites\/[^/]+\/recover-background$/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuiteRecoverBackground(req, res, user);
     return;
   }
 
