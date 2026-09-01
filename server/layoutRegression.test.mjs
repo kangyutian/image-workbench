@@ -52,3 +52,25 @@ test("image creation does not render the retired internal sidebar column", async
   assert.doesNotMatch(app, /className="image-workbench-sidebar"/);
   assert.doesNotMatch(app, /aria-label="图片任务导航"/);
 });
+
+test("video, cutout, and print creation panes share the image batch desk shell", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+
+  assert.match(app, /className="panel batch-creation-desk video-create-panel"/);
+  assert.match(app, /className="panel batch-creation-desk print-create-panel"/);
+  assert.match(app, /className="panel batch-creation-desk cutout-create-panel"/);
+  assert.match(app, /batch-task-workspace/);
+  assert.match(css, /\.batch-creation-desk[^}]*background:/s);
+  assert.match(css, /\.batch-creation-desk[^}]*border-radius:/s);
+  assert.match(css, /\.batch-task-workspace[^}]*display:/s);
+});
+
+test("product suite now exposes four generated views without the product detail slot", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(app, /自动抠图 \+ 4 张生成/);
+  assert.match(app, /固定 4 张/);
+  assert.match(app, /<option value="image2">Image 2<\/option>/);
+  assert.doesNotMatch(app, /产品细节特写图|product-detail/);
+});

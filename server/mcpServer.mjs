@@ -137,7 +137,7 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
     inputSchema: { ...baseWrite, image: mediaRefSchema(), background: z.enum(["transparent", "white"]) },
   }, (args) => operation(operations, "createCutoutTask")(args));
   register("create_product_suite", {
-    description: "创建包含六张固定画面的商品详情页套图任务。",
+    description: "创建包含四张固定画面的商品详情页套图任务。",
     write: true,
     inputSchema: {
       ...baseWrite,
@@ -146,7 +146,7 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
       product_name: z.string().max(500).optional(),
       selling_points: z.string().max(4000).optional(),
       visual_style: z.string().max(2000).optional(),
-      model: z.enum(["kling", "nanobanana"]).optional(),
+      model: z.enum(["kling", "nanobanana", "image2"]).optional(),
       gender: z.enum(["female", "male"]).optional(),
       body_type: z.enum(["slim", "muscular", "fat", "curvy", "voluptuous"]).optional(),
       prompts: z.record(z.string(), z.string().max(4000)).optional(),

@@ -18,7 +18,7 @@ import {
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
 import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
-import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
+import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
@@ -60,7 +60,6 @@ const productSuiteSlots: Array<{ slot: ProductSuiteSlot; label: string; eyebrow:
   { slot: "model-front", label: "欧美模特正面上身图", eyebrow: "02 · Model Front", template: "欧美模特正面站姿上身展示商品，完整展示商品版型、颜色、材质和穿着效果。" },
   { slot: "model-angle", label: "欧美模特角度上身图", eyebrow: "03 · Model Angle", template: "同一位欧美模特以三分之二角度或自然侧身姿态展示商品，突出轮廓、剪裁和版型。" },
   { slot: "model-back", label: "欧美模特背面上身展示图", eyebrow: "04 · Model Back", template: "同一位欧美模特背对镜头展示商品背面，完整展示后背结构、肩带、扣位、轮廓和版型。" },
-  { slot: "product-detail", label: "产品细节特写图", eyebrow: "05 · Product Detail", template: "商品局部高清细节特写，展示材质、纹理、缝线、工艺或功能细节。" },
 ];
 
 const productSuiteGenderLabels: Record<ProductSuiteGender, string> = { female: "女性", male: "男性" };
@@ -414,7 +413,7 @@ function App() {
   const [productSuites, setProductSuites] = useState<ProductSuite[]>([]);
   const [suiteImage, setSuiteImage] = useState<ProductSuiteMedia | null>(null);
   const [suiteBackground, setSuiteBackground] = useState<ProductSuiteMedia | null>(null);
-  const [suiteModel, setSuiteModel] = useState<"kling" | "nanobanana">("kling");
+  const [suiteModel, setSuiteModel] = useState<ProductSuiteModel>("kling");
   const [suiteGender, setSuiteGender] = useState<ProductSuiteGender>("female");
   const [suiteBodyType, setSuiteBodyType] = useState<ProductSuiteBodyType>("balanced");
   const [suiteAgeRange, setSuiteAgeRange] = useState<ProductSuiteAgeRange>("25-35");
@@ -1024,7 +1023,7 @@ function App() {
 
   function renderPrintExtractionPanel() {
     return (
-      <section className="panel print-create-panel">
+      <section className="panel batch-creation-desk print-create-panel">
         <div className="batch-heading image-batch-command-row">
           <div>
             <p className="eyebrow">Print Extract</p>
@@ -1085,8 +1084,8 @@ function App() {
     return (
       <section className="panel product-suite-panel">
         <div className="batch-heading">
-          <div><p className="eyebrow">Product Detail Suite</p><h2>商品详情页主图套图</h2><span>上传一张商品图，自动抠图并生成 5 张统一风格的详情页主图。</span></div>
-          <span className="suite-spec-badge">4:5 · 2K · 5 张</span>
+          <div><p className="eyebrow">Product Detail Suite</p><h2>商品详情页主图套图</h2><span>上传一张商品图，自动抠图并生成 4 张统一风格的详情页主图。</span></div>
+          <span className="suite-spec-badge">4:5 · 2K · 4 张</span>
         </div>
         <div className="product-suite-form-grid">
           <div className="suite-upload-stack">
@@ -1109,7 +1108,7 @@ function App() {
           </div>
           <div className="suite-options-column">
             <div className="suite-option-grid">
-              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as "kling" | "nanobanana")}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option></select></label>
+              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as ProductSuiteModel)}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option><option value="image2">Image 2</option></select></label>
               <label className="field"><span>模特性别</span><select value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特体型</span><select value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特年龄</span><select value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -1118,7 +1117,7 @@ function App() {
             </div>
             <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
             <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
-            <div className="suite-submit-row"><div><strong>自动抠图 + 5 张生成</strong><span>三视图共享同一位模特身份，失败后可单独重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
+            <div className="suite-submit-row"><div><strong>自动抠图 + 4 张生成</strong><span>三视图共享同一位模特身份，失败后可单独重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
           </div>
         </div>
         {suiteError && <div className="error-box">{suiteError}</div>}
@@ -1128,7 +1127,7 @@ function App() {
 
   function renderProductSuiteQueue() {
     return <section className="product-suite-queue">
-      <div className="mode-banner"><div><p className="eyebrow">Suite Queue</p><h2>商品套图任务</h2></div><span>固定 5 张，统一背景和模型；每张文案可独立编辑。</span></div>
+      <div className="mode-banner"><div><p className="eyebrow">Suite Queue</p><h2>商品套图任务</h2></div><span>固定 4 张，统一背景和模型；每张文案可独立编辑。</span></div>
       {productSuites.length === 0 ? <div className="panel empty-state task-empty-state"><ImagePlus size={30} /><strong>还没有商品套图任务</strong><span>上传商品图并开始生成后，结果会显示在这里。</span></div> : <div className="product-suite-list">{productSuites.map((suite) => <article className="panel product-suite-task-card" key={suite.id}>
         <div className="suite-task-heading"><div><p className="eyebrow">Product Detail Suite</p><h3>{suite.input.productName || "未命名商品"}</h3><span className={`status-pill status-${suite.status === "done" ? "done" : suite.status === "error" ? "error" : suite.status === "partial" ? "error" : "running"}`}>{suite.status === "queued" ? "排队中" : suite.status === "running" ? "生成中" : suite.status === "partial" ? "部分完成" : suite.status === "done" ? "已完成" : "失败"}</span></div><div className="suite-task-heading-actions">{suite.recovery?.canRecoverBackground && <><input ref={(element) => { suiteRecoveryInputRefs.current[suite.id] = element; }} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void recoverProductSuiteBackground(suite.id, file); event.currentTarget.value = ""; }} /><button className="secondary" type="button" disabled={suiteRecoveringId === suite.id} onClick={() => suiteRecoveryInputRefs.current[suite.id]?.click()}>{suiteRecoveringId === suite.id ? <Loader2 className="spin" size={16} /> : <UploadCloud size={16} />}补传背景并继续</button></>}{suite.items.some((item) => item.resultUrl) && <a className="secondary" href={productSuiteZipUrl(suite.id)}><Download size={16} />下载整套 ZIP</a>}</div></div>
         <div className="product-suite-item-grid">{productSuiteSlots.map((definition) => { const item = suite.items.find((candidate) => candidate.slot === definition.slot); if (!item) return null; return <article className="product-suite-item-card" key={item.slot}><div className="suite-item-heading"><div><p className="eyebrow">{definition.eyebrow}</p><h4>{definition.label}</h4></div><span className={`status-pill status-${item.status === "done" ? "done" : item.status === "error" ? "error" : "running"}`}>{item.status === "queued" ? "排队中" : item.status === "running" ? "生成中" : item.status === "done" ? "已完成" : "失败"}</span></div><textarea value={item.prompt} onChange={(event) => setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt: event.target.value } : currentItem) } : currentSuite))} onBlur={(event) => void saveProductSuitePrompt(suite.id, item.slot, event.target.value)} rows={4} /><div className="suite-item-actions"><button className="ghost" type="button" onClick={() => { const prompt = item.defaultPrompt || item.prompt; setProductSuites((current) => current.map((currentSuite) => currentSuite.id === suite.id ? { ...currentSuite, items: currentSuite.items.map((currentItem) => currentItem.slot === item.slot ? { ...currentItem, prompt } : currentItem) } : currentSuite)); void saveProductSuitePrompt(suite.id, item.slot, prompt); }}><RefreshCcw size={15} />恢复默认文案</button>{item.resultUrl && <a className="secondary" href={item.resultUrl} target="_blank" rel="noreferrer"><Download size={15} />下载图片</a>}{item.status === "error" && <button className="ghost" type="button" onClick={() => void retryProductSuiteSlot(suite.id, item.slot)}><RefreshCcw size={15} />{item.slot === "model-front" ? "重生成三视图" : "单张重试"}</button>}</div>{item.resultUrl ? <img className="suite-result-preview" src={item.resultUrl} alt={definition.label} /> : <div className="empty-state suite-result-empty"><Loader2 className={item.status === "running" || item.status === "queued" ? "spin" : ""} size={24} /><span>{item.status === "error" ? item.error || "生成失败" : item.status === "queued" ? "等待共享执行槽位" : "正在生成"}</span></div>}</article>; })}</div>
@@ -1140,8 +1139,8 @@ function App() {
 
   return (
     <main className={`app-shell creation-${creationKind}`}>
-      <header className={`workbench-topbar ${creationKind === "image" ? "image-workbench-topbar" : ""}`}>
-        {creationKind === "image" && <div className="image-workbench-brand"><span className="image-workbench-brand-mark"><ImagePlus size={14} /></span><strong>Batch Desk</strong></div>}
+      <header className={`workbench-topbar ${creationKind !== "suite" ? "image-workbench-topbar" : ""}`}>
+        {creationKind !== "suite" && <div className="image-workbench-brand"><span className="image-workbench-brand-mark"><ImagePlus size={14} /></span><strong>Batch Desk</strong></div>}
         <nav className="workbench-nav" aria-label="创作类型">
           <button className={creationKind === "image" ? "active" : ""} aria-pressed={creationKind === "image"} onClick={() => setCreationKind("image")} type="button">图片创作</button>
           <button className={creationKind === "video" ? "active" : ""} aria-pressed={creationKind === "video"} onClick={() => setCreationKind("video")} type="button">视频创作</button>
@@ -1294,7 +1293,7 @@ function App() {
           <span>全局设置可应用到所有待生成任务卡；每张卡仍可单独覆盖模型、提示词和参考图。</span>
           {bulkError && <strong>{bulkError}</strong>}
         </div>
-      </section> : creationKind === "video" ? <section className="panel video-create-panel">
+      </section> : creationKind === "video" ? <section className="panel batch-creation-desk video-create-panel">
         <div className="batch-heading"><div><p className="eyebrow">Video creation</p><h2>视频创作</h2><span>每张卡独立配置；图片和视频任务共享服务器并发队列。</span></div><button className="secondary" type="button" onClick={addVideoDraft} disabled={videoDrafts.length >= MAX_TASKS}><Plus size={16} />添加视频任务</button></div>
         <div className="video-global-settings"><label className="field"><span>模型</span><select value={videoModel} onChange={(event) => setVideoModel(event.target.value as VideoModelId)}><option value="seedance-2-mini-image-to-video">Seedance 2.0 Mini</option><option value="seedance-2-fast-image-to-video">Seedance 2.0 Fast</option><option value="seedance-2-image-to-video">Seedance 2.0</option><option value="kling-3-std-image-to-video">Kling 3.0 Standard</option><option value="kling-3-pro-image-to-video">Kling 3.0 Pro</option><option value="kling-3-std-motion-control">Kling 3.0 Standard · 动作控制</option><option value="grok-imagine-video-v1.5-image-to-video">Grok Imagine Video v1.5</option></select></label><label className="field"><span>视频比例</span><select value={videoAspectRatio} onChange={(event) => setVideoAspectRatio(event.target.value)}><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label><label className="field"><span>时长</span><select value={videoDuration} onChange={(event) => setVideoDuration(Number(event.target.value))}>{videoDurationOptions(videoModel).map((item) => <option key={item} value={item}>{item} 秒</option>)}</select></label><label className="field"><span>分辨率</span><select value={videoResolution} onChange={(event) => setVideoResolution(event.target.value)}>{videoResolutionOptions(videoModel).map((item) => <option key={item} value={item}>{item === "4k" ? "4K" : item}</option>)}</select></label><label className="toggle-field audio-toggle"><input type="checkbox" checked={videoAudio} onChange={(event) => setVideoAudio(event.target.checked)} /><span><strong>音频</strong><small>生成同步音频</small></span></label><button className="primary apply-video-button" type="button" onClick={applyVideoGlobalSettings}>应用到所有视频任务卡</button></div>
         <div className="video-draft-list">{videoDrafts.map((draft, index) => <article className="video-draft-card" key={draft.id}>
@@ -1304,7 +1303,7 @@ function App() {
           {isMotionControlVideo(draft.modelId) && <div className="dropzone compact-dropzone motion-draft-upload"><Video size={22} /><strong>动作参考视频（必填）</strong><span>{draft.motionVideo?.fileName ?? "MP4、WebM 或 MOV"}</span><button className="secondary" type="button" onClick={() => videoDraftInputRefs.current[`${draft.id}-motion`]?.click()}>{draft.motionVideo ? "替换动作视频" : "选择动作视频"}</button><input ref={(element) => { videoDraftInputRefs.current[`${draft.id}-motion`] = element; }} type="file" accept="video/mp4,video/webm,video/quicktime" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readMedia(file).then((media) => updateVideoDraft(draft.id, { motionVideo: media, error: "" })); event.currentTarget.value = ""; }} /></div>}
           {draft.error && <div className="error-box">{draft.error}</div>}<div className="task-actions"><button className="primary" type="button" disabled={draft.status === "submitting"} onClick={() => void submitVideoDraft(draft)}>{draft.status === "submitting" ? <Loader2 className="spin" size={18} /> : <Video size={18} />}{draft.status === "submitting" ? "提交中..." : "创建此视频任务"}</button></div>
         </article>)}</div>
-      </section> : creationKind === "print" ? renderPrintExtractionPanel() : creationKind === "suite" ? renderProductSuitePanel() : <section className="panel cutout-create-panel">
+      </section> : creationKind === "print" ? renderPrintExtractionPanel() : creationKind === "suite" ? renderProductSuitePanel() : <section className="panel batch-creation-desk cutout-create-panel">
         <div className="batch-heading">
           <div><p className="eyebrow">Product cutout</p><h2>产品抠图</h2><span>把产品从原图中提取出来，输出透明底或纯白底素材。</span></div>
           <button className="primary" type="button" disabled={isCreatingCutout} onClick={() => void submitCutoutTask()}>{isCreatingCutout ? <Loader2 className="spin" size={18} /> : <Scissors size={18} />}{isCreatingCutout ? "正在提交..." : "创建抠图任务"}</button>
@@ -1329,7 +1328,7 @@ function App() {
         {cutoutError && <div className="error-box">{cutoutError}</div>}
       </section>}
 
-      <section className={`task-workspace ${creationKind === "image" ? "image-task-workspace" : ""}`}>
+      <section className={`task-workspace ${creationKind === "image" ? "image-task-workspace" : creationKind === "suite" ? "suite-task-workspace" : "batch-task-workspace"}`}>
         <div className="mode-banner">
           <div>
             <p className="eyebrow">Task Queue</p>
@@ -1345,7 +1344,7 @@ function App() {
             <span>先点击顶部“添加任务”，最多添加 10 个 task。</span>
           </div>
         ) : (
-          <div className={`task-list ${creationKind === "image" ? "image-task-grid" : ""}`}>
+          <div className={`task-list ${creationKind === "image" ? "image-task-grid" : creationKind === "suite" ? "" : "batch-task-grid"}`}>
             {tasks.map((task, taskIndex) => {
               const mode = resolveMode(task.images.length);
               const totalSize = task.images.reduce((sum, image) => sum + (image.size ?? 0), 0);

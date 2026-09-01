@@ -27,7 +27,7 @@ import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { normalizeUsageRange, summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
 import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
-import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { PRODUCT_SUITE_MODELS, PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteImageModel, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
 import { canRecoverProductSuiteBackground, cutoutResultUrlForSuite } from "./server/productSuiteRecovery.mjs";
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
@@ -798,10 +798,11 @@ async function resolvePrediction(batch, request) {
 }
 
 async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageUrl = "") {
+  const imageModel = productSuiteImageModel(suite.input.model);
   const request = {
     kind: "image",
-    provider: suite.input.model === "nanobanana" ? "nanobanana" : "kling",
-    nanoModel: suite.input.model === "nanobanana" ? "nano-banana-pro" : "kling-image-o3-edit",
+    provider: imageModel.provider,
+    nanoModel: imageModel.nanoModel,
     prompt: productSuiteGenerationPrompt(slot.slot, suite.input, suite.items.find((item) => item.slot === slot.slot)?.prompt || ""),
     images: [],
     aspectRatio: "4:5",
@@ -870,7 +871,7 @@ async function executeProductSuiteTask(queuedTask) {
     stage = "background-upload";
     let backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? suite.backgroundUrl || "" : "";
     if (!backgroundUrl && suite.input.backgroundMode === "custom" && suite.backgroundImage) {
-      backgroundUrl = await uploadMedia(suite.backgroundImage, "image", { provider: "kling", nanoModel: "kling-image-o3-edit" });
+      backgroundUrl = await uploadMedia(suite.backgroundImage, "image", productSuiteImageModel(suite.input.model));
       productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
       cleanupStagedMediaReferences([suite.backgroundImage]);
     }
@@ -951,7 +952,7 @@ function mcpCapabilities() {
     image_models: mcpImageModels,
     video_models: clientVideoModels(),
     cutout: { model: "bria-extract-object", backgrounds: ["transparent", "white"] },
-    product_suite: { slots: PRODUCT_SUITE_SLOTS.map(({ slot, label, fileName }) => ({ slot, label, file_name: fileName })), aspect_ratio: "4:5", resolution: "2k" },
+    product_suite: { models: PRODUCT_SUITE_MODELS.map(({ id, label, provider, nanoModel }) => ({ id, label, provider, nano_model: nanoModel })), slots: PRODUCT_SUITE_SLOTS.map(({ slot, label, fileName }) => ({ slot, label, file_name: fileName })), aspect_ratio: "4:5", resolution: "2k" },
   };
 }
 

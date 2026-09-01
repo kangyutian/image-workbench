@@ -3,14 +3,15 @@ import test from "node:test";
 import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./productSuiteModels.mjs";
 import * as productSuiteHelpers from "./productSuiteModels.mjs";
 
-test("product suite defaults to female balanced, white background, Kling O3 and five prompts", () => {
+test("product suite defaults to female balanced, white background, Kling O3 and four prompts", () => {
   const input = normalizeProductSuiteInput({});
   assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, ageRange: input.ageRange, hairStyle: input.hairStyle, skinTone: input.skinTone, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "balanced", ageRange: "25-35", hairStyle: "natural-loose", skinTone: "natural", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
   const prompts = buildProductSuitePrompts(input);
   assert.deepEqual(Object.keys(prompts), PRODUCT_SUITE_SLOTS.map((item) => item.slot));
-  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back", "product-detail"]);
-  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.fileName), ["01-product-3d.jpg", "02-model-front.jpg", "03-model-angle.jpg", "04-model-back.jpg", "05-product-detail.jpg"]);
+  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back"]);
+  assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.fileName), ["01-product-3d.jpg", "02-model-front.jpg", "03-model-angle.jpg", "04-model-back.jpg"]);
   assert.equal(Object.hasOwn(prompts, "model-scene"), false);
+  assert.equal(Object.hasOwn(prompts, "product-detail"), false);
   assert.match(prompts["model-back"], /model-back|背面|背对镜头/);
   assert.match(prompts["model-front"], /女性/);
   assert.match(prompts["model-front"], /身材健康匀称、略带自然曲线感，腰臀比例自然，双腿修长/);
@@ -20,6 +21,14 @@ test("product suite defaults to female balanced, white background, Kling O3 and 
   assert.match(prompts["model-front"], /用户上传的商品图片/);
   assert.match(prompts["model-angle"], /90度侧身/);
   assert.match(prompts["model-back"], /用户上传的商品图片/);
+});
+
+test("product suite accepts Image 2 and maps it to the image2 provider", () => {
+  const input = normalizeProductSuiteInput({ model: "image2" });
+
+  assert.equal(input.model, "image2");
+  assert.equal(input.nanoModel, "gpt-image-2");
+  assert.deepEqual(productSuiteHelpers.productSuiteImageModel(input.model), { provider: "image2", nanoModel: "gpt-image-2" });
 });
 
 test("product suite accepts independent gender and body choices and custom background", () => {
@@ -34,7 +43,7 @@ test("people-facing product suite prompts include the natural skin texture direc
   const prompts = buildProductSuitePrompts(normalizeProductSuiteInput({}));
 
   for (const [slot, prompt] of Object.entries(prompts)) {
-    if (slot === "product-3d" || slot === "product-detail") {
+    if (slot === "product-3d") {
       assert.equal(prompt.includes(skinDirection), false);
     } else {
       assert.ok(prompt.includes(skinDirection), `missing skin direction in prompt: ${prompt}`);
@@ -84,7 +93,6 @@ test("model prompts include the requested shoulder-to-head proportion", () => {
     assert.ok(prompts[slot].includes(proportionDirection), `missing proportion direction in ${slot}`);
   }
   assert.equal(prompts["product-3d"].includes(proportionDirection), false);
-  assert.equal(prompts["product-detail"].includes(proportionDirection), false);
 });
 
 test("front model prompt uses the detailed fashion direction and background-specific copy", () => {
@@ -125,20 +133,11 @@ test("3D product prompt uses the ghost mannequin apparel presentation", () => {
   assert.equal(prompt.includes("皮肤有自然微光"), false);
 });
 
-test("product detail prompt requests one clothing detail close-up with the default studio background", () => {
-  const prompt = buildProductSuitePrompts(normalizeProductSuiteInput({}))["product-detail"];
+test("product suite no longer exposes a product detail generation slot", () => {
+  const prompts = buildProductSuitePrompts(normalizeProductSuiteInput({}));
 
-  assert.match(prompt, /只选择一个/);
-  assert.match(prompt, /最能体现商品卖点的服装局部/);
-  assert.match(prompt, /近距离商品摄影或微距特写/);
-  assert.match(prompt, /禁止整件服装、多个部位拼图、分格排版、真人、人体和衣架/);
-  assert.match(prompt, /浅灰偏白色无缝摄影棚背景/);
-  assert.equal(prompt.includes("整体风格"), false);
-  assert.equal(prompt.includes("皮肤有自然微光"), false);
-
-  const customPrompt = buildProductSuitePrompts(normalizeProductSuiteInput({ backgroundMode: "custom" }))["product-detail"];
-  assert.match(customPrompt, /用户上传的统一背景图，并与整套图片保持一致/);
-  assert.equal(customPrompt.includes("浅灰偏白色无缝摄影棚背景"), false);
+  assert.equal(productSuiteHelpers.productSuiteSlot("product-detail"), null);
+  assert.equal(prompts["product-detail"], undefined);
 });
 
 test("new product suite prompts do not inject the retired overall visual style", () => {
@@ -153,7 +152,7 @@ test("product suite generation plans the front image before identity-dependent v
   const items = PRODUCT_SUITE_SLOTS.map(({ slot }) => ({ slot, status: "queued" }));
   const plan = productSuiteHelpers.productSuiteGenerationPlan(items);
 
-  assert.deepEqual(plan.independent.map((item) => item.slot), ["product-3d", "product-detail"]);
+  assert.deepEqual(plan.independent.map((item) => item.slot), ["product-3d"]);
   assert.equal(plan.front.slot, "model-front");
   assert.deepEqual(plan.identityDependent.map((item) => item.slot), ["model-angle", "model-back"]);
 });
@@ -177,7 +176,6 @@ test("retrying the front image requeues the whole three-view identity group", ()
     { slot: "model-front", status: "queued" },
     { slot: "model-angle", status: "queued" },
     { slot: "model-back", status: "queued" },
-    { slot: "product-detail", status: "done" },
   ];
   const plan = productSuiteHelpers.productSuiteGenerationPlan(items, "model-front");
 

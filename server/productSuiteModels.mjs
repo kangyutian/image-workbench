@@ -3,7 +3,12 @@ export const PRODUCT_SUITE_SLOTS = [
   { slot: "model-front", label: "欧美模特正面上身图", fileName: "02-model-front.jpg" },
   { slot: "model-angle", label: "欧美模特角度上身图", fileName: "03-model-angle.jpg" },
   { slot: "model-back", label: "欧美模特背面上身展示图", fileName: "04-model-back.jpg" },
-  { slot: "product-detail", label: "产品细节特写图", fileName: "05-product-detail.jpg" },
+];
+
+export const PRODUCT_SUITE_MODELS = [
+  { id: "kling", label: "Kling Image O3 Edit", provider: "kling", nanoModel: "kling-image-o3-edit" },
+  { id: "nanobanana", label: "Nano Banana Pro", provider: "nanobanana", nanoModel: "nano-banana-pro" },
+  { id: "image2", label: "Image 2", provider: "image2", nanoModel: "gpt-image-2" },
 ];
 
 const GENDERS = new Set(["female", "male"]);
@@ -21,7 +26,6 @@ const legacySlotTemplates = {
   "model-front": "画面中是一位年轻{{gender}}模特，身材健康匀称、略带自然曲线感，腰臀比例自然，双腿修长。模特年龄为25至35岁，体型严格按照用户选择的{{bodyType}}生成。模特头发蓬松但整洁，带有轻微凌乱碎发感。五官精致自然，眉毛清晰，裸色哑光唇妆，妆容非常干净简约，皮肤保留真实毛孔和自然肤质，不要过度磨皮。模特穿的衣服必须严格参考我上传的产品图片，包括：颜色、版型、领口、肩带/袖子结构、衣长、腰线、下摆、图案、印花位置、刺绣、纽扣、缝线、面料纹理以及整体比例全部尽可能准确还原。不要自行改变衣服设计，不增加不存在的装饰，不修改原本图案，不改变颜色。服装自然贴合模特身体，并根据真实布料产生合理褶皱和垂坠感。模特正面面对镜头站立，身体保持笔直，双腿自然靠近，一条腿可以轻微向前。双手自然向下放置在身体两侧偏后的位置，肩膀放松，表情冷静、自信、略带高级感，眼睛直视镜头。摄影机位与人物胸口基本平齐，使用约50–70mm人像镜头视角，人物位于画面正中央，保持对称、简洁的商业广告构图。人物从头部一直拍摄到脚部／全身，避免夸张广角透视。使用大型柔光箱从人物侧前方打光，形成柔和但清晰的面部与身体阴影，另一侧轻微补光。皮肤呈现自然柔和的光泽，服装纹理清晰。整体呈现：90年代末至2000年代初时尚内衣广告、Y2K fashion campaign、minimal studio fashion photography、clean editorial lookbook、真实品牌官网模特图、略带胶片颗粒感。画面真实自然，不要明显 AI 感，不要塑料皮肤，不要夸张磨皮，不要过度锐化。高真实感摄影、真实人体比例、真实皮肤纹理、真实布料纹理、自然阴影、professional fashion campaign photography。商品名称：{{productName}}。商品信息：{{sellingPoints}}。整体风格：{{style}}。用户上传的商品图片是唯一的服装来源，不复制任何其他参考图中的人物或服装。{{backgroundDescription}}不添加文字、logo或水印。",
   "model-angle": "侧面商品目录展示图。必须使用正面图中的同一位25至35岁欧美{{gender}}模特作为人物身份参考，保持完全相同的脸型、五官、眼睛、鼻子、嘴型、发型、发色、肤色、妆容、年龄、体型{{bodyType}}和肩宽比例，只改变拍摄角度，不重新生成或更换模特。正面成品图仅用于锁定人物身份、发型和妆容，不作为服装设计来源；服装必须严格参考用户上传的商品图片，用户上传的商品图片是唯一的服装来源。侧面只展示用户商品真实的轮廓、厚度、垂坠感、贴合度和结构，不复制其他参考图中的人物或服装。以90度侧身或自然三分之二侧身姿态展示商品，手臂自然放松，不遮挡商品主体。商品名称：{{productName}}。商品信息：{{sellingPoints}}。整体风格：{{style}}。{{backgroundDescription}}与正面图保持相同的背景、光线、色温和商业摄影质感，不添加文字、logo或水印。",
   "model-back": "背面商品目录展示图。必须使用正面图中的同一位25至35岁欧美{{gender}}模特作为人物身份参考，保持完全相同的脸型、五官、眼睛、鼻子、嘴型、发型、发色、肤色、妆容、年龄、体型{{bodyType}}和肩宽比例，只改变拍摄角度，不重新生成或更换模特。正面成品图仅用于锁定人物身份、发型和妆容，不作为服装设计来源；服装必须严格参考用户上传的商品图片，用户上传的商品图片是唯一的服装来源。完整展示商品后背结构、后片比例、肩部、袖部、领口、下摆、缝线和材质，不复制其他参考图中的人物或服装。模特背对镜头自然站立，可以轻微转头但不能遮挡商品背面。商品名称：{{productName}}。商品信息：{{sellingPoints}}。整体风格：{{style}}。{{backgroundDescription}}与正面图、侧面图保持相同的模特身份、商品、背景、光线、色温和商业摄影质感，不添加文字、logo或水印。",
-  "product-detail": "产品细节特写图。用户上传的商品图片是唯一的商品来源，生成商品局部高清特写，准确保留商品真实颜色、材质、结构和细节。商品名称：{{productName}}。商品信息：{{sellingPoints}}。整体风格：{{style}}。重点展示材质、纹理、缝线、工艺或功能细节，使用{{background}}，构图干净，适合电商详情页，不参考或带入其他参考图中的商品，不添加文字、logo或水印。",
 };
 
 const genderLabels = { female: "女性", male: "男性" };
@@ -51,7 +55,6 @@ const slotTemplates = {
   "model-front": "画面中是一位年轻{{gender}}模特。模特年龄为{{ageRange}}，体型为{{bodyType}}。模特{{hairStyle}}。肤色为{{skinTone}}，五官精致自然，眉毛清晰，裸色哑光唇妆，妆容非常干净简约，皮肤保留真实毛孔和自然肤质，不要过度磨皮。模特穿的衣服必须严格参考我上传的产品图片，包括：颜色、版型、领口、肩带/袖子结构、衣长、腰线、下摆、图案、印花位置、刺绣、纽扣、缝线、面料纹理以及整体比例全部尽可能准确还原。不要自行改变衣服设计，不增加不存在的装饰，不修改原本图案，不改变颜色。服装自然贴合模特身体，并根据真实布料产生合理褶皱和垂坠感。模特正面面对镜头站立，身体保持笔直，双腿自然靠近，一条腿可以轻微向前。双手自然向下放置在身体两侧偏后的位置，肩膀放松，表情冷静、自信、略带高级感，眼睛直视镜头。摄影机位与人物胸口基本平齐，使用约50–70mm人像镜头视角，人物位于画面正中央，保持对称、简洁的商业广告构图。人物从头部一直拍摄到脚部／全身，避免夸张广角透视。使用大型柔光箱从人物侧前方打光，形成柔和但清晰的面部与身体阴影，另一侧轻微补光。皮肤呈现自然柔和的光泽，服装纹理清晰。整体呈现：90年代末至2000年代初时尚内衣广告、Y2K fashion campaign、minimal studio fashion photography、clean editorial lookbook、真实品牌官网模特图、略带胶片颗粒感。画面真实自然，不要明显 AI 感，不要塑料皮肤，不要夸张磨皮，不要过度锐化。高真实感摄影、真实人体比例、真实皮肤纹理、自然阴影、professional fashion campaign photography。商品名称：{{productName}}。商品信息：{{sellingPoints}}。用户上传的商品图片是唯一的服装来源，不复制任何其他参考图中的人物或服装。{{backgroundDescription}}不添加文字、logo或水印。",
   "model-angle": "角度商品目录展示图。必须使用正面图中的同一位{{ageRange}}欧美{{gender}}模特作为人物身份参考，保持完全相同的脸型、五官、眼睛、鼻子、嘴型、发型（{{hairStyle}}）、发色、肤色（{{skinTone}}）、妆容、年龄、体型（{{bodyType}}）和肩宽比例，只改变拍摄角度，不重新生成或更换模特。正面成品图仅用于锁定人物身份、发型和妆容，不作为服装设计来源；服装必须严格参考用户上传的商品图片，用户上传的商品图片是唯一的服装来源。侧面只展示用户商品真实的轮廓、厚度、垂坠感、贴合度和结构，不复制其他参考图中的人物或服装。以90度侧身或自然三分之二侧身姿态展示商品，手臂自然放松，不遮挡商品主体。商品名称：{{productName}}。商品信息：{{sellingPoints}}。{{backgroundDescription}}与正面图保持相同的背景、光线、色温和商业摄影质感，不添加文字、logo或水印。",
   "model-back": "背面商品目录展示图。必须使用正面图中的同一位{{ageRange}}欧美{{gender}}模特作为人物身份参考，保持完全相同的脸型、五官、眼睛、鼻子、嘴型、发型（{{hairStyle}}）、发色、肤色（{{skinTone}}）、妆容、年龄、体型（{{bodyType}}）和肩宽比例，只改变拍摄角度，不重新生成或更换模特。正面成品图仅用于锁定人物身份、发型和妆容，不作为服装设计来源；服装必须严格参考用户上传的商品图片，用户上传的商品图片是唯一的服装来源。完整展示商品后背结构、后片比例、肩部、袖部、领口、下摆、缝线和材质，不复制其他参考图中的人物或服装。模特背对镜头自然站立，可以轻微转头但不能遮挡商品背面。商品名称：{{productName}}。商品信息：{{sellingPoints}}。{{backgroundDescription}}与正面图、侧面图保持相同的模特身份、商品、背景、光线、色温和商业摄影质感，不添加文字、logo或水印。",
-  "product-detail": "产品细节特写图。用户上传的商品图片是唯一的商品来源。只选择一个最能体现商品卖点的服装局部进行近距离商品摄影或微距特写，例如领口、肩带、面料纹理、印花、刺绣、缝线、纽扣、袖口、腰头或下摆；一张图片只展示一个局部，让该局部占据画面主体。准确保留用户商品的真实颜色、版型、材质、纹理、缝线、工艺和细小褶皱，不新增不存在的设计，不改变产品结构。禁止整件服装、多个部位拼图、分格排版、真人、人体和衣架。{{backgroundDescription}}使用柔和的专业商品摄影灯光，形成自然高光和细腻阴影，画面干净，适合电商详情页。不要参考或带入其他参考图中的商品，不添加文字、logo或水印。",
 };
 
 export function normalizeProductSuiteInput(input = {}) {
@@ -60,11 +63,12 @@ export function normalizeProductSuiteInput(input = {}) {
   const ageRange = AGE_RANGES.has(input.ageRange) ? input.ageRange : "25-35";
   const hairStyle = HAIR_STYLES.has(input.hairStyle) ? input.hairStyle : "natural-loose";
   const skinTone = SKIN_TONES.has(input.skinTone) ? input.skinTone : "natural";
-  const model = input.model === "nanobanana" ? "nanobanana" : "kling";
+  const model = PRODUCT_SUITE_MODELS.some((item) => item.id === input.model) ? input.model : "kling";
+  const imageModel = productSuiteImageModel(model);
   return {
     mode: "product-detail-suite",
     model,
-    nanoModel: model === "nanobanana" ? "nano-banana-pro" : "kling-image-o3-edit",
+    nanoModel: imageModel.nanoModel,
     gender,
     bodyType,
     ageRange,
@@ -78,6 +82,11 @@ export function normalizeProductSuiteInput(input = {}) {
     sellingPoints: String(input.sellingPoints || "").trim().slice(0, 600),
     prompts: input.prompts && typeof input.prompts === "object" ? { ...input.prompts } : {},
   };
+}
+
+export function productSuiteImageModel(model = "kling") {
+  const selected = PRODUCT_SUITE_MODELS.find((item) => item.id === model) || PRODUCT_SUITE_MODELS[0];
+  return { provider: selected.provider, nanoModel: selected.nanoModel };
 }
 
 export function validateProductSuiteInput(input = {}, images = []) {

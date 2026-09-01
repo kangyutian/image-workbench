@@ -2369,3 +2369,422 @@ button:disabled { cursor: not-allowed; opacity: 0.62; }
 @media (max-width: 980px) {
   .creation-image .image-bulk-prompt { grid-row: auto; }
 }
+
+/* Keep the already shipped image Batch Desk as the visual source of truth for the other creation tabs. */
+.creation-video,
+.creation-cutout,
+.creation-print {
+  background: #f7f9fb;
+  color: #1c2b3a;
+}
+
+.creation-video .image-workbench-topbar,
+.creation-cutout .image-workbench-topbar,
+.creation-print .image-workbench-topbar {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #dbe3ea;
+  color: #1c2b3a;
+  height: 58px;
+  padding: 0 20px;
+}
+
+.creation-video .image-workbench-topbar .workbench-nav,
+.creation-cutout .image-workbench-topbar .workbench-nav,
+.creation-print .image-workbench-topbar .workbench-nav {
+  gap: 6px;
+  margin-left: 0;
+}
+
+.creation-video .image-workbench-topbar .workbench-nav button,
+.creation-cutout .image-workbench-topbar .workbench-nav button,
+.creation-print .image-workbench-topbar .workbench-nav button {
+  border-bottom: 2px solid transparent;
+  color: #596a7b;
+  font-size: 13px;
+  padding: 20px 12px 18px;
+}
+
+.creation-video .image-workbench-topbar .workbench-nav button:hover,
+.creation-video .image-workbench-topbar .workbench-nav button.active,
+.creation-cutout .image-workbench-topbar .workbench-nav button:hover,
+.creation-cutout .image-workbench-topbar .workbench-nav button.active,
+.creation-print .image-workbench-topbar .workbench-nav button:hover,
+.creation-print .image-workbench-topbar .workbench-nav button.active {
+  border-bottom-color: #13a89e;
+  color: #087f78;
+}
+
+.creation-video .workbench-top-actions,
+.creation-cutout .workbench-top-actions,
+.creation-print .workbench-top-actions {
+  color: #5f6f7f;
+  font-size: 12px;
+  gap: 12px;
+}
+
+.creation-video .workbench-top-actions .balance-badge,
+.creation-cutout .workbench-top-actions .balance-badge,
+.creation-print .workbench-top-actions .balance-badge {
+  border-color: #dbe3ea;
+  padding: 7px 11px;
+}
+
+.creation-video .workbench-top-actions .account-orb,
+.creation-cutout .workbench-top-actions .account-orb,
+.creation-print .workbench-top-actions .account-orb {
+  background: #536578;
+  height: 28px;
+  width: 28px;
+}
+
+.creation-video .workbench-layout,
+.creation-cutout .workbench-layout,
+.creation-print .workbench-layout {
+  align-items: stretch;
+  background: #f7f9fb;
+  display: grid;
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(100vh - 58px);
+  padding: 0;
+}
+
+.creation-video .workbench-main,
+.creation-cutout .workbench-main,
+.creation-print .workbench-main {
+  min-width: 0;
+  overflow: visible;
+  padding: 16px 18px 74px;
+}
+
+.creation-video .page-heading,
+.creation-cutout .page-heading,
+.creation-print .page-heading {
+  display: none;
+}
+
+.batch-creation-desk {
+  background: #fff;
+  border: 1px solid #d5e0e8;
+  border-radius: 9px;
+  box-shadow: 0 3px 12px rgba(30, 52, 72, .04);
+  margin-bottom: 12px;
+  padding: 14px;
+}
+
+.batch-creation-desk > .batch-heading {
+  align-items: center;
+  border-bottom: 1px solid #e7edf1;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+}
+
+.batch-creation-desk > .batch-heading .eyebrow {
+  color: #778796;
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+
+.batch-creation-desk > .batch-heading h2 {
+  color: #172b3d;
+  font-size: 17px;
+}
+
+.batch-creation-desk > .batch-heading > span,
+.batch-creation-desk .print-model-badge {
+  border-color: #d5e0e8;
+  color: #536879;
+  font-size: 11px;
+  padding: 6px 9px;
+}
+
+.batch-creation-desk > .batch-heading button,
+.batch-creation-desk .batch-actions button,
+.batch-creation-desk .task-actions button {
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.batch-creation-desk > .batch-heading .primary,
+.batch-creation-desk .primary {
+  background: #13a89e;
+  box-shadow: none;
+}
+
+.batch-creation-desk > .batch-heading .primary:hover,
+.batch-creation-desk .primary:hover {
+  background: #0c9189;
+}
+
+.batch-creation-desk .field > span,
+.batch-creation-desk .toggle-field strong,
+.batch-creation-desk .print-guidance-card strong {
+  color: #516476;
+  font-size: 11px;
+}
+
+.batch-creation-desk .field select,
+.batch-creation-desk .field input,
+.batch-creation-desk .field textarea {
+  min-height: 36px;
+  padding: 6px 9px;
+}
+
+.creation-video .video-global-settings {
+  align-items: end;
+  background: #f8fafb;
+  border: 1px solid #e1e8ed;
+  border-radius: 7px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: minmax(190px, 1.35fr) repeat(4, minmax(88px, .72fr)) auto;
+  margin-bottom: 12px;
+  padding: 10px;
+}
+
+.creation-video .video-global-settings .field {
+  margin: 0;
+}
+
+.creation-video .video-global-settings .apply-video-button {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.creation-video .video-draft-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.creation-video .video-draft-card {
+  align-content: start;
+  background: #fff;
+  border-color: #d5e0e8;
+  border-radius: 8px;
+  gap: 9px;
+  padding: 12px;
+}
+
+.creation-video .video-draft-card .task-heading {
+  align-items: start;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.creation-video .video-draft-card .task-heading h3 {
+  color: #172b3d;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.creation-video .video-draft-card .task-heading .eyebrow {
+  font-size: 10px;
+  margin-bottom: 3px;
+}
+
+.creation-video .video-draft-fields {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr;
+}
+
+.creation-video .video-draft-fields .field,
+.creation-video .video-draft-fields textarea {
+  margin-bottom: 0;
+}
+
+.creation-video .video-draft-fields textarea {
+  min-height: 78px;
+}
+
+.creation-video .video-frame-slots {
+  gap: 8px;
+}
+
+.creation-video .video-frame-slot {
+  min-height: 116px;
+  padding: 9px;
+}
+
+.creation-video .video-frame-slot strong,
+.creation-video .video-frame-slot span {
+  font-size: 11px;
+}
+
+.creation-video .video-reference-preview {
+  max-height: 96px;
+  width: min(100%, 150px);
+}
+
+.creation-cutout .cutout-create-grid,
+.creation-print .print-create-grid {
+  align-items: start;
+  background: #f8fafb;
+  border: 1px solid #e1e8ed;
+  border-radius: 7px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.creation-cutout .cutout-create-grid {
+  grid-template-columns: minmax(220px, .82fr) minmax(0, 1.18fr);
+}
+
+.creation-cutout .cutout-dropzone {
+  min-height: 176px;
+  padding: 10px;
+}
+
+.creation-cutout .cutout-source-preview {
+  height: 118px;
+  width: min(100%, 210px);
+}
+
+.creation-cutout .cutout-options {
+  display: grid;
+  gap: 9px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.creation-cutout .cutout-options > .field:first-child,
+.creation-cutout .cutout-options > .cutout-price {
+  grid-column: 1 / -1;
+}
+
+.creation-cutout .cutout-options .toggle-field {
+  margin: 0;
+  padding: 7px 0;
+}
+
+.creation-cutout .cutout-price {
+  margin-top: 0;
+  padding: 8px 9px;
+}
+
+.creation-cutout .background-choice button {
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+.creation-cutout .background-choice .checker-preview,
+.creation-cutout .background-choice .white-preview {
+  height: 28px;
+  width: 28px;
+}
+
+.creation-print .print-create-grid {
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr);
+}
+
+.creation-print .print-create-grid .field {
+  margin-bottom: 0;
+}
+
+.creation-print .print-link-actions {
+  margin-top: 9px;
+}
+
+.creation-print .print-guidance-card {
+  align-content: start;
+  min-height: 0;
+  padding: 10px;
+}
+
+.batch-task-workspace {
+  gap: 0;
+}
+
+.batch-task-workspace > .mode-banner {
+  display: none;
+}
+
+.batch-task-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.batch-task-grid .task-card {
+  align-content: start;
+  display: grid;
+  gap: 0;
+  grid-template-columns: 1fr;
+  min-width: 0;
+  padding: 12px;
+}
+
+.batch-task-grid .task-output-area {
+  border-left: 0;
+  border-top: 1px solid #e7edf1;
+  margin-top: 11px;
+  min-height: 175px;
+  padding: 11px 0 0;
+}
+
+.batch-task-grid .task-actions button {
+  border-radius: 6px;
+  font-size: 11px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.creation-video .video-queue-section,
+.creation-cutout .cutout-queue-section,
+.creation-print .video-queue-section {
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.creation-video .video-queue-section > .mode-banner,
+.creation-cutout .cutout-queue-section > .mode-banner,
+.creation-print .video-queue-section > .mode-banner {
+  background: #fff;
+  border: 1px solid #d5e0e8;
+  border-radius: 9px;
+  box-shadow: 0 3px 12px rgba(30, 52, 72, .04);
+  padding: 12px 14px;
+}
+
+.creation-video .video-task-list,
+.creation-cutout .video-task-list,
+.creation-print .video-task-list {
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 1280px) {
+  .creation-video .video-draft-list,
+  .creation-video .video-task-list,
+  .creation-cutout .video-task-list,
+  .creation-print .video-task-list,
+  .batch-task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 980px) {
+  .creation-video .video-global-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .creation-video .video-global-settings .apply-video-button { grid-column: 1 / -1; }
+  .creation-video .video-draft-list,
+  .creation-cutout .video-task-list,
+  .creation-print .video-task-list,
+  .batch-task-grid { grid-template-columns: 1fr; }
+  .creation-cutout .cutout-create-grid,
+  .creation-print .print-create-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .creation-video .image-workbench-topbar,
+  .creation-cutout .image-workbench-topbar,
+  .creation-print .image-workbench-topbar { height: auto; min-height: 58px; padding: 0 10px; }
+  .creation-video .workbench-main,
+  .creation-cutout .workbench-main,
+  .creation-print .workbench-main { padding: 10px 10px 68px; }
+  .creation-video .video-global-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .creation-video .video-global-settings .apply-video-button { grid-column: 1 / -1; }
+  .batch-creation-desk > .batch-heading { align-items: stretch; flex-direction: column; }
+  .batch-creation-desk > .batch-heading .batch-actions { justify-content: flex-start; }
+}
