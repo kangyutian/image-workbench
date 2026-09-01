@@ -76,3 +76,37 @@ test("maps video frame and motion references without waiting for generation", as
   assert.equal(created[0].input.referenceImages[1].dataUrl, "https://example.com/end.png");
   assert.deepEqual(queued.map((task) => task.id), ["task-1"]);
 });
+
+test("maps product suite model reference and independent appearance selectors", async () => {
+  const { deps, created, queued } = fixture();
+  deps.createProductSuite = async (input) => {
+    const suite = { id: "suite-1", status: "queued", input, items: [] };
+    const task = { id: "suite-task-1", status: "queued", kind: "suite", input };
+    created.push(task);
+    return { suite, task };
+  };
+  deps.publicSuite = (suite) => suite;
+  const operations = createMcpOperations(deps);
+
+  const result = await operations.createProductSuite({
+    idempotency_key: "suite-request-1",
+    product_image: { media_id: "product-1" },
+    model_reference_image: { media_id: "model-1" },
+    model: "image2",
+    gender: "female",
+    body_type: "balanced",
+    age_range: "25-35",
+    hair_style: "long-wavy",
+    hair_color: "blonde",
+    skin_tone: "fair",
+  });
+
+  assert.equal(result.suite_id, "suite-1");
+  assert.equal(created[0].input.model, "image2");
+  assert.equal(created[0].input.modelReferenceImage.stagedUploadId, "model-1");
+  assert.equal(created[0].input.hairColor, "blonde");
+  assert.equal(created[0].input.ageRange, "25-35");
+  assert.equal(created[0].input.hairStyle, "long-wavy");
+  assert.equal(created[0].input.skinTone, "fair");
+  assert.deepEqual(queued.map((task) => task.id), ["suite-task-1"]);
+});

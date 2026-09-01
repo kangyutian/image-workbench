@@ -28,6 +28,8 @@ import { normalizeUsageRange, summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
 import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
 import { PRODUCT_SUITE_MODELS, PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteImageModel, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { analyzeModelReferenceImage } from "./server/modelReferenceAnalysis.mjs";
+import { composeSubjectOnFixedBackground, imageBufferDataUrl, prepareComposedImageForUpload } from "./server/imageComposition.mjs";
 import { canRecoverProductSuiteBackground, cutoutResultUrlForSuite } from "./server/productSuiteRecovery.mjs";
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
@@ -749,13 +751,14 @@ function suiteStatusForItems(items) {
 
 function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore } = {}) {
   const ownerInfo = ownerIdentity(owner);
-  const normalized = normalizeProductSuiteInput(input);
+  const modelReferenceImage = input?.modelReferenceImage || null;
+  const normalized = normalizeProductSuiteInput({ ...input, ...(modelReferenceImage ? { hasModelReference: true } : {}) });
   const sourceImages = Array.isArray(input.images) ? input.images : [];
   const backgroundImages = Array.isArray(input.backgroundImages) ? input.backgroundImages : [];
-  const errors = validateProductSuiteInput({ ...normalized, backgroundImages }, sourceImages);
+  const errors = validateProductSuiteInput({ ...normalized, backgroundImages, modelReferenceImage }, sourceImages);
   if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
   const id = taskId();
-  const allImages = [...sourceImages, ...backgroundImages];
+  const allImages = [...sourceImages, ...backgroundImages, ...(modelReferenceImage ? [modelReferenceImage] : [])];
   const uploadReferences = allImages.filter((image) => image?.stagedUploadId);
   const claimedByUploadId = new Map();
   if (uploadReferences.length) {
@@ -770,6 +773,8 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
   const staged = allImages.map((image) => image?.stagedUploadId ? claimedByUploadId.get(image.stagedUploadId) : locallyStaged[localIndex++]);
   const prompts = buildProductSuitePrompts(normalized);
   const { backgroundImages: _backgroundImages, ...suiteInput } = normalized;
+  const backgroundIndex = sourceImages.length;
+  const modelReferenceIndex = sourceImages.length + backgroundImages.length;
   const suite = productSuiteStore.create({
     id,
     owner: ownerInfo.username,
@@ -777,7 +782,11 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
     status: "queued",
     input: { ...suiteInput, prompts },
     sourceImage: staged[0],
-    backgroundImage: staged[1] || null,
+    backgroundImage: backgroundImages.length ? staged[backgroundIndex] || null : null,
+    modelReferenceImage: modelReferenceImage ? staged[modelReferenceIndex] || null : null,
+    modelReferenceAnalysis: null,
+    modelReferenceAnalysisStatus: modelReferenceImage ? "queued" : "not-requested",
+    modelReferenceAnalysisUsage: null,
     productImageUrl: "",
     items: PRODUCT_SUITE_SLOTS.map((slot) => ({ slot: slot.slot, label: slot.label, status: "queued", prompt: prompts[slot.slot], defaultPrompt: prompts[slot.slot], resultUrl: "", error: "" })),
   });
@@ -797,13 +806,129 @@ async function resolvePrediction(batch, request) {
   return pollPrediction(batch.id, request);
 }
 
-async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageUrl = "") {
+function imageDataUrlForModelReference(media) {
+  if (typeof media?.dataUrl === "string" && /^(?:https?:\/\/|data:image\/)/i.test(media.dataUrl)) return media.dataUrl;
+  const mcpRecord = media?.stagedUploadId ? mcpUploadStore.get(media.stagedUploadId) : null;
+  const file = fileForStagedMedia(media, { root: mcpRecord ? mcpUploadsRoot : stagedImagesRoot });
+  return `data:${file.mimeType};base64,${file.buffer.toString("base64")}`;
+}
+
+async function downloadImageBuffer(url) {
+  const dataUrl = String(url || "");
+  const match = dataUrl.match(/^data:[^;]+;base64,(.+)$/);
+  if (match) return Buffer.from(match[1], "base64");
+  if (!/^https?:\/\//i.test(dataUrl)) throw new Error("图片结果不是可读取的 URL。");
+  const response = await fetch(dataUrl, { headers: { accept: "image/*" } });
+  if (!response.ok) throw new Error(`无法读取图片结果（${response.status}）。`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function analyzeSuiteModelReference(suite) {
+  const currentSuite = productSuiteStore.get(suite.id);
+  if (!currentSuite?.modelReferenceImage) return true;
+  if (currentSuite.modelReferenceAnalysis) return true;
+  productSuiteStore.patch(currentSuite.id, { modelReferenceAnalysisStatus: "running", error: "" });
+  try {
+    const imageUrl = imageDataUrlForModelReference(currentSuite.modelReferenceImage);
+    const { analysis, usage } = await analyzeModelReferenceImage(imageUrl);
+    const updatedSuite = productSuiteStore.get(currentSuite.id);
+    const analyzedInput = { ...updatedSuite.input, hasModelReference: true, modelReferenceAnalysis: analysis, prompts: {} };
+    const analyzedPrompts = buildProductSuitePrompts(analyzedInput);
+    const items = updatedSuite.items.map((item) => {
+      if (!PRODUCT_SUITE_SLOTS.some((slot) => slot.slot === item.slot) || item.slot === "product-3d") return item;
+      const wasDefault = item.prompt === item.defaultPrompt;
+      return { ...item, prompt: wasDefault ? analyzedPrompts[item.slot] : item.prompt, defaultPrompt: analyzedPrompts[item.slot] };
+    });
+    const prompts = Object.fromEntries(items.map((item) => [item.slot, item.prompt]));
+    productSuiteStore.patch(currentSuite.id, {
+      modelReferenceAnalysis: analysis,
+      modelReferenceAnalysisStatus: "done",
+      modelReferenceAnalysisUsage: usage,
+      input: { ...analyzedInput, prompts },
+      items,
+      error: "",
+    });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "模特参考图分析失败。";
+    productSuiteStore.patch(currentSuite.id, { modelReferenceAnalysisStatus: "error", error: message });
+    for (const slot of ["model-front", "model-angle", "model-back"]) productSuiteStore.patchItem(currentSuite.id, slot, { status: "error", resultUrl: "", error: "模特分析失败，未使用默认人物文案。请重试该画面。" });
+    console.error("[product-suite] model reference analysis failed", JSON.stringify({ suiteId: currentSuite.id, stage: "model-analysis", error: message }));
+    return false;
+  }
+}
+
+async function ensureSuiteModelReferenceUrl(suite) {
+  const currentSuite = productSuiteStore.get(suite.id);
+  if (!currentSuite?.modelReferenceImage) return "";
+  if (currentSuite.modelReferenceUrl) return currentSuite.modelReferenceUrl;
+  const request = { kind: "image", ...productSuiteImageModel(currentSuite.input.model) };
+  const url = await uploadMedia(currentSuite.modelReferenceImage, "image", request);
+  productSuiteStore.patch(currentSuite.id, { modelReferenceUrl: url });
+  return url;
+}
+
+async function composeSuiteResult(slot, suite, rawUrl, backgroundUrl) {
+  if (!backgroundUrl) return rawUrl;
+  const cutoutRequest = {
+    mode: "product-cutout",
+    provider: "bria",
+    nanoModel: "bria-extract-object",
+    prompt: "提取生成画面中的服装或模特主体，输出透明背景，不改变主体外观。",
+    backgroundMode: "transparent",
+    images: [],
+  };
+  const cutoutTaskId = taskId();
+  const cutoutTask = taskStore.create({
+    id: cutoutTaskId,
+    owner: suite.owner,
+    accountId: suite.accountId,
+    kind: "image",
+    suiteId: suite.id,
+    slot: `${slot.slot}-background-cutout`,
+    status: "running",
+    input: { ...cutoutRequest, images: [{ id: `${cutoutTaskId}-0`, fileName: `${slot.slot}-generated.png`, dataUrl: rawUrl, mimeType: "image/png" }] },
+    results: [],
+    error: "",
+    predictionId: null,
+    predictionIds: [],
+  });
+  recordUsageTask(cutoutTask);
+  try {
+    const cutout = await submitOnePrediction(cutoutRequest, [rawUrl]);
+    if (cutout.id) {
+      taskStore.patch(cutoutTaskId, { predictionId: cutout.id, predictionIds: [cutout.id] });
+      recordUsageTask(taskStore.get(cutoutTaskId));
+    }
+    const [subjectUrl] = await resolvePrediction(cutout, cutoutRequest);
+    const completed = taskStore.patch(cutoutTaskId, { status: "done", results: [{ url: subjectUrl }], error: "" });
+    recordUsageTask(completed, true);
+
+    const [backgroundBuffer, subjectBuffer] = await Promise.all([downloadImageBuffer(backgroundUrl), downloadImageBuffer(subjectUrl)]);
+    const composed = await composeSubjectOnFixedBackground(backgroundBuffer, subjectBuffer);
+    const uploadImageResult = await prepareComposedImageForUpload(composed);
+    const uploadRequest = { kind: "image", ...productSuiteImageModel(suite.input.model) };
+    return uploadMedia({ fileName: `${slot.slot}.${uploadImageResult.mimeType === "image/jpeg" ? "jpg" : "png"}`, mimeType: uploadImageResult.mimeType, dataUrl: imageBufferDataUrl(uploadImageResult.buffer, uploadImageResult.mimeType) }, "image", uploadRequest);
+  } catch (error) {
+    const failed = taskStore.patch(cutoutTaskId, { status: "error", error: error instanceof Error ? error.message : "主体抠图或背景合成失败。" });
+    recordUsageTask(failed, true);
+    throw error;
+  }
+}
+
+async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageUrl = "", modelReferenceUrl = "") {
+  productSuiteStore.patchItem(suite.id, slot.slot, { status: "running", error: "" });
   const imageModel = productSuiteImageModel(suite.input.model);
+  const suiteInput = {
+    ...suite.input,
+    hasModelReference: Boolean(suite.modelReferenceAnalysis || suite.modelReferenceImage || suite.input.hasModelReference),
+    ...(suite.modelReferenceAnalysis ? { modelReferenceAnalysis: suite.modelReferenceAnalysis } : {}),
+  };
   const request = {
     kind: "image",
     provider: imageModel.provider,
     nanoModel: imageModel.nanoModel,
-    prompt: productSuiteGenerationPrompt(slot.slot, suite.input, suite.items.find((item) => item.slot === slot.slot)?.prompt || ""),
+    prompt: productSuiteGenerationPrompt(slot.slot, suiteInput, suite.items.find((item) => item.slot === slot.slot)?.prompt || ""),
     images: [],
     aspectRatio: "4:5",
     count: 1,
@@ -811,7 +936,7 @@ async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageU
     quality: "high",
   };
   const childId = taskId();
-  const referenceImages = productSuiteReferenceImages(slot.slot, productUrl, backgroundUrl, frontImageUrl);
+  const referenceImages = productSuiteReferenceImages(slot.slot, productUrl, backgroundUrl, frontImageUrl, modelReferenceUrl);
   const references = referenceImages.map(({ url }) => url);
   const child = taskStore.create({ id: childId, owner: suite.owner, accountId: suite.accountId, kind: "image", suiteId: suite.id, slot: slot.slot, status: "running", input: { ...request, images: referenceImages.map(({ url, fileName }, index) => ({ id: `${childId}-${index}`, fileName, dataUrl: url, mimeType: "image/png" })) }, results: [], error: "", predictionId: null, predictionIds: [] });
   recordUsageTask(child);
@@ -824,13 +949,24 @@ async function runSuiteImage(slot, suite, productUrl, backgroundUrl, frontImageU
     const urls = await resolvePrediction(batch, request);
     const done = taskStore.patch(childId, { status: "done", results: urls.map((url) => ({ url })), error: "" });
     recordUsageTask(done, true);
-    productSuiteStore.patchItem(suite.id, slot.slot, { status: "done", resultUrl: urls[0] || "", error: "" });
-    return urls[0] || "";
   } catch (error) {
     const failed = taskStore.patch(childId, { status: "error", error: error instanceof Error ? error.message : "生成失败。" });
     recordUsageTask(failed, true);
     productSuiteStore.patchItem(suite.id, slot.slot, { status: "error", error: failed.error });
     console.error("[product-suite] image generation failed", JSON.stringify({ suiteId: suite.id, slot: slot.slot, stage: "image-generation", error: failed.error }));
+    return "";
+  }
+
+  const rawUrl = productSuiteStore.get(suite.id)?.items.find((item) => item.slot === slot.slot)?.resultUrl || "";
+  const rawResult = taskStore.get(childId)?.results?.[0]?.url || rawUrl;
+  try {
+    const resultUrl = rawResult ? await composeSuiteResult(slot, suite, rawResult, backgroundUrl) : "";
+    productSuiteStore.patchItem(suite.id, slot.slot, { status: resultUrl ? "done" : "error", resultUrl, error: resultUrl ? "" : "生成没有返回图片结果。" });
+    return resultUrl;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "主体抠图或背景合成失败。";
+    productSuiteStore.patchItem(suite.id, slot.slot, { status: "error", resultUrl: "", error: message });
+    console.error("[product-suite] background composition failed", JSON.stringify({ suiteId: suite.id, slot: slot.slot, stage: "background-composition", error: message }));
     return "";
   }
 }
@@ -839,11 +975,14 @@ async function executeProductSuiteTask(queuedTask) {
   const suiteTask = taskStore.get(queuedTask.id);
   const suite = suiteTask ? productSuiteStore.get(suiteTask.suiteId) : null;
   if (!suite || suite.status === "done") return;
+  let stage = "model-analysis";
   try {
     taskStore.patch(suiteTask.id, { status: "running" });
     productSuiteStore.patch(suite.id, { status: "running" });
+
+    const modelAnalysisReady = await analyzeSuiteModelReference(suite);
     let productUrl = suite.productImageUrl || "";
-    let stage = "cutout";
+    stage = "cutout";
     if (!productUrl) {
       const cutoutRequest = { mode: "product-cutout", provider: "bria", nanoModel: "bria-extract-object", prompt: "main product", backgroundMode: "transparent", images: [suite.sourceImage] };
       const cutoutTaskId = taskId();
@@ -859,7 +998,7 @@ async function executeProductSuiteTask(queuedTask) {
         [productUrl] = await resolvePrediction(cutout, cutoutRequest);
         const completedCutout = taskStore.patch(cutoutTaskId, { status: "done", results: [{ url: productUrl }], error: "" });
         recordUsageTask(completedCutout, true);
-        productSuiteStore.patch(suite.id, { productImageUrl: productUrl });
+        productSuiteStore.patch(suite.id, { productImageUrl: productUrl, sourceImage: null });
         cleanupStagedMediaReferences([suite.sourceImage]);
       } catch (error) {
         const failedCutout = taskStore.patch(cutoutTaskId, { status: "error", error: error instanceof Error ? error.message : "抠图失败。" });
@@ -872,21 +1011,32 @@ async function executeProductSuiteTask(queuedTask) {
     let backgroundUrl = suite.input.backgroundMode === "custom" && suite.backgroundImage ? suite.backgroundUrl || "" : "";
     if (!backgroundUrl && suite.input.backgroundMode === "custom" && suite.backgroundImage) {
       backgroundUrl = await uploadMedia(suite.backgroundImage, "image", productSuiteImageModel(suite.input.model));
-      productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
+      productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl, backgroundImage: null });
       cleanupStagedMediaReferences([suite.backgroundImage]);
     }
     productSuiteStore.patch(suite.id, { productImageUrl: productUrl, backgroundUrl });
+
+    stage = "model-reference-upload";
+    let modelReferenceUrl = "";
+    const latestBeforeImages = productSuiteStore.get(suite.id);
+    const hasPendingModelImages = latestBeforeImages?.items?.some((item) => PRODUCT_SUITE_SLOTS.some((slot) => slot.slot === item.slot) && item.slot !== "product-3d" && item.status !== "done");
+    if (modelAnalysisReady && hasPendingModelImages && latestBeforeImages?.modelReferenceImage) {
+      modelReferenceUrl = await ensureSuiteModelReferenceUrl(latestBeforeImages);
+    }
+
     stage = "image-generation";
     const currentSuite = productSuiteStore.get(suite.id);
     const plan = productSuiteGenerationPlan(currentSuite.items, queuedTask.suiteRetrySlot || "");
-    const runItem = (item, frontImageUrl = "") => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl, frontImageUrl);
+    const runItem = (item, frontImageUrl = "") => runSuiteImage(PRODUCT_SUITE_SLOTS.find((slot) => slot.slot === item.slot), productSuiteStore.get(suite.id), productUrl, backgroundUrl, frontImageUrl, modelReferenceUrl);
     await Promise.all(plan.independent.map((item) => runItem(item)));
 
     let frontImageUrl = productSuiteStore.get(suite.id)?.items.find((item) => item.slot === "model-front")?.resultUrl || "";
-    if (plan.front) frontImageUrl = await runItem(plan.front);
+    if (plan.front && modelAnalysisReady) frontImageUrl = await runItem(plan.front);
 
     if (plan.identityDependent.length > 0) {
-      if (!frontImageUrl) {
+      if (!modelAnalysisReady) {
+        for (const item of plan.identityDependent) productSuiteStore.patchItem(suite.id, item.slot, { status: "error", error: "模特分析失败，未使用默认人物文案。请先重试正面图。" });
+      } else if (!frontImageUrl) {
         const dependencyError = "正面模特图生成失败，侧面和背面暂不生成。请先重试正面图。";
         for (const item of plan.identityDependent) productSuiteStore.patchItem(suite.id, item.slot, { status: "error", error: dependencyError });
       } else {
@@ -896,7 +1046,11 @@ async function executeProductSuiteTask(queuedTask) {
     const finished = productSuiteStore.get(suite.id);
     const activeSlots = new Set(PRODUCT_SUITE_SLOTS.map(({ slot }) => slot));
     const status = suiteStatusForItems(finished.items.filter((item) => activeSlots.has(item.slot)));
-    productSuiteStore.patch(suite.id, { status });
+    productSuiteStore.patch(suite.id, {
+      status,
+      ...(status === "done" && finished.modelReferenceImage ? { modelReferenceImage: null, modelReferenceUrl: "" } : {}),
+    });
+    if (status === "done" && finished.modelReferenceImage) cleanupStagedMediaReferences([finished.modelReferenceImage]);
     taskStore.patch(suiteTask.id, { status: status === "done" ? "done" : "error", error: status === "partial" ? "部分图片生成失败，请重试失败画面。" : "" });
   } catch (error) {
     console.error("[product-suite] task failed", JSON.stringify({ suiteId: suite.id, stage, error: error instanceof Error ? error.message : "商品套图生成失败。" }));
@@ -952,7 +1106,7 @@ function mcpCapabilities() {
     image_models: mcpImageModels,
     video_models: clientVideoModels(),
     cutout: { model: "bria-extract-object", backgrounds: ["transparent", "white"] },
-    product_suite: { models: PRODUCT_SUITE_MODELS.map(({ id, label, provider, nanoModel }) => ({ id, label, provider, nano_model: nanoModel })), slots: PRODUCT_SUITE_SLOTS.map(({ slot, label, fileName }) => ({ slot, label, file_name: fileName })), aspect_ratio: "4:5", resolution: "2k" },
+    product_suite: { models: PRODUCT_SUITE_MODELS.map(({ id, label, provider, nanoModel }) => ({ id, label, provider, nano_model: nanoModel })), slots: PRODUCT_SUITE_SLOTS.map(({ slot, label, fileName }) => ({ slot, label, file_name: fileName })), aspect_ratio: "4:5", resolution: "2k", model_reference_analysis: { model: "openai/gpt-5.6-sol", selectable_options_locked: true }, hair_colors: ["natural", "black", "dark-brown", "light-brown", "blonde", "copper-red", "silver-gray"] },
   };
 }
 
@@ -1037,7 +1191,11 @@ function createMcpOperationsFor(owner) {
     retryProductSuiteSlot: ({ suiteId, slot, owner: suiteOwner }) => {
       const suite = mcpSuiteOrNotFound(suiteId, suiteOwner);
       if (!PRODUCT_SUITE_SLOTS.some((item) => item.slot === slot)) throw Object.assign(new Error("无效的商品套图画面。"), { statusCode: 400 });
-      productSuiteStore.patchItem(suiteId, slot, { status: "queued", resultUrl: "", error: "" });
+      const retrySlots = slot === "model-front" ? ["model-front", "model-angle", "model-back"] : [slot];
+      for (const retrySlot of retrySlots) productSuiteStore.patchItem(suiteId, retrySlot, { status: "queued", resultUrl: "", error: "" });
+      if (slot === "model-front" && suite.modelReferenceImage) {
+        productSuiteStore.patch(suiteId, { modelReferenceAnalysis: null, modelReferenceAnalysisStatus: "queued", modelReferenceAnalysisUsage: null, input: { ...suite.input, modelReferenceAnalysis: null } });
+      }
       const task = taskStore.create({ id: taskId(), owner: suiteOwner.username, accountId: suiteOwner.accountId, kind: "suite", suiteId, suiteRetrySlot: slot, status: "queued", results: [], error: "" });
       productSuiteStore.patch(suiteId, { status: "queued" });
       taskScheduler.enqueue(task);
@@ -1562,6 +1720,9 @@ function handleProductSuiteRetry(req, res, owner) {
   if (!PRODUCT_SUITE_SLOTS.some((item) => item.slot === slot)) return sendJson(res, 400, { message: "无效的商品套图画面。" });
   const retrySlots = slot === "model-front" ? ["model-front", "model-angle", "model-back"] : [slot];
   for (const retrySlot of retrySlots) productSuiteStore.patchItem(id, retrySlot, { status: "queued", resultUrl: "", error: "" });
+  if (slot === "model-front" && suite.modelReferenceImage) {
+    productSuiteStore.patch(id, { modelReferenceAnalysis: null, modelReferenceAnalysisStatus: "queued", modelReferenceAnalysisUsage: null, input: { ...suite.input, modelReferenceAnalysis: null } });
+  }
   const task = taskStore.create({ id: taskId(), owner: owner.username, accountId: owner.accountId, kind: "suite", suiteId: id, suiteRetrySlot: slot, status: "queued", results: [], error: "" });
   productSuiteStore.patch(id, { status: "queued" });
   taskScheduler.enqueue(task);
@@ -1657,7 +1818,7 @@ function handleProductSuiteDelete(req, res, owner) {
   if (!suite || !suiteOwnerMatches(suite, owner)) return sendJson(res, 404, { message: "商品套图任务不存在。" });
   productSuiteStore.remove(id);
   for (const task of taskStore.list().filter((item) => item.suiteId === id)) taskStore.remove(task.id);
-  cleanupStagedMediaReferences([suite.sourceImage, suite.backgroundImage]);
+  cleanupStagedMediaReferences([suite.sourceImage, suite.backgroundImage, suite.modelReferenceImage]);
   sendJson(res, 200, { ok: true });
 }
 

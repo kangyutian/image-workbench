@@ -148,7 +148,12 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
       visual_style: z.string().max(2000).optional(),
       model: z.enum(["kling", "nanobanana", "image2"]).optional(),
       gender: z.enum(["female", "male"]).optional(),
-      body_type: z.enum(["slim", "muscular", "fat", "curvy", "voluptuous"]).optional(),
+      body_type: z.enum(["slim", "balanced", "athletic", "muscular", "plus", "curvy", "hourglass", "fat", "voluptuous"]).optional(),
+      age_range: z.enum(["18-24", "25-35", "36-45", "46-55", "56-plus"]).optional(),
+      hair_style: z.enum(["natural-loose", "long-straight", "long-wavy", "low-ponytail", "high-ponytail", "short", "bob"]).optional(),
+      hair_color: z.enum(["natural", "black", "dark-brown", "light-brown", "blonde", "copper-red", "silver-gray"]).optional(),
+      skin_tone: z.enum(["natural", "fair", "medium", "tan", "deep"]).optional(),
+      model_reference_image: mediaRefSchema().optional(),
       prompts: z.record(z.string(), z.string().max(4000)).optional(),
     },
   }, (args) => operation(operations, "createProductSuite")(args));

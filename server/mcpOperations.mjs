@@ -108,16 +108,22 @@ export function createMcpOperations(deps) {
     createProductSuite: async (input) => rememberOrCreate(deps, "create_product_suite", input.idempotency_key, async () => {
       const productImage = await deps.resolveMediaRef(input.product_image, { mediaKind: "image", owner: deps.owner });
       const backgroundImage = input.background_image ? await deps.resolveMediaRef(input.background_image, { mediaKind: "image", owner: deps.owner }) : null;
+      const modelReferenceImage = input.model_reference_image ? await deps.resolveMediaRef(input.model_reference_image, { mediaKind: "image", owner: deps.owner }) : null;
       const suiteInput = {
         images: [productImage],
         backgroundImages: backgroundImage ? [backgroundImage] : [],
+        ...(modelReferenceImage ? { modelReferenceImage } : {}),
         backgroundMode: backgroundImage ? "custom" : "white",
         productName: input.product_name || "",
         sellingPoints: input.selling_points || "",
         style: input.visual_style || "",
         model: input.model || "kling",
         gender: input.gender || "female",
-        bodyType: normalizeBodyType(input.body_type || "slim"),
+        bodyType: normalizeBodyType(input.body_type || "balanced"),
+        ageRange: input.age_range || "25-35",
+        hairStyle: input.hair_style || "natural-loose",
+        hairColor: input.hair_color || "natural",
+        skinTone: input.skin_tone || "natural",
         prompts: input.prompts || {},
       };
       const created = await deps.createProductSuite(suiteInput, deps.owner);

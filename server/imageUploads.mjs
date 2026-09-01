@@ -189,8 +189,12 @@ export function publicTask(task) {
 
 export function publicProductSuite(suite) {
   const clone = JSON.parse(JSON.stringify(suite));
-  for (const key of ["owner", "accountId", "sourceImage", "backgroundImage", "predictionIds", "billingRecords"]) delete clone[key];
-  if (clone.input && typeof clone.input === "object") delete clone.input.backgroundImages;
+  for (const key of ["owner", "accountId", "sourceImage", "backgroundImage", "modelReferenceImage", "modelReferenceAnalysis", "modelReferenceAnalysisUsage", "modelReferenceUrl", "predictionIds", "billingRecords"]) delete clone[key];
+  if (clone.input && typeof clone.input === "object") {
+    delete clone.input.backgroundImages;
+    delete clone.input.modelReferenceAnalysis;
+    delete clone.input.modelReferenceImage;
+  }
   if (Array.isArray(clone.items)) clone.items = clone.items.map((item) => {
     const error = item.error === "fetch failed" ? "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。" : item.error || "";
     const safe = { slot: item.slot, label: item.label, status: item.status, prompt: item.prompt || "", defaultPrompt: item.defaultPrompt || item.prompt || "", resultUrl: item.resultUrl || "", error };

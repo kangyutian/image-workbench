@@ -43,3 +43,25 @@ test("product suite store removes embedded background data from legacy records",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("product suite store preserves private model reference state for restart recovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "product-suite-reference-"));
+  const file = join(root, "product-suites.json");
+  try {
+    const store = new ProductSuiteStore({ file });
+    store.create({
+      id: "suite-reference",
+      owner: "alice",
+      accountId: "account-alice",
+      modelReferenceImage: { stagedPath: "suite-reference/2.jpg", mimeType: "image/jpeg" },
+      modelReferenceAnalysis: { ageAppearance: "30岁观感" },
+      input: { hasModelReference: true },
+      items: [],
+    });
+    const restored = new ProductSuiteStore({ file }).get("suite-reference");
+    assert.equal(restored.modelReferenceImage.stagedPath, "suite-reference/2.jpg");
+    assert.equal(restored.modelReferenceAnalysis.ageAppearance, "30岁观感");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

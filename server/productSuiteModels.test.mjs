@@ -3,9 +3,9 @@ import test from "node:test";
 import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./productSuiteModels.mjs";
 import * as productSuiteHelpers from "./productSuiteModels.mjs";
 
-test("product suite defaults to female balanced, white background, Kling O3 and four prompts", () => {
+test("product suite defaults to female balanced, white background, natural hair color, Kling O3 and four prompts", () => {
   const input = normalizeProductSuiteInput({});
-  assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, ageRange: input.ageRange, hairStyle: input.hairStyle, skinTone: input.skinTone, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "balanced", ageRange: "25-35", hairStyle: "natural-loose", skinTone: "natural", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
+  assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, ageRange: input.ageRange, hairStyle: input.hairStyle, hairColor: input.hairColor, skinTone: input.skinTone, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "balanced", ageRange: "25-35", hairStyle: "natural-loose", hairColor: "natural", skinTone: "natural", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
   const prompts = buildProductSuitePrompts(input);
   assert.deepEqual(Object.keys(prompts), PRODUCT_SUITE_SLOTS.map((item) => item.slot));
   assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back"]);
@@ -57,6 +57,7 @@ test("model profile options replace the default identity directions", () => {
     bodyType: "athletic",
     ageRange: "36-45",
     hairStyle: "low-ponytail",
+    hairColor: "copper-red",
     skinTone: "tan",
   });
   const prompts = buildProductSuitePrompts(input);
@@ -66,10 +67,45 @@ test("model profile options replace the default identity directions", () => {
     assert.match(prompts[slot], /男性/);
     assert.match(prompts[slot], /运动紧实/);
     assert.match(prompts[slot], /低马尾/);
+    assert.match(prompts[slot], /红棕色|铜色/);
     assert.match(prompts[slot], /自然小麦肤色/);
   }
   assert.equal(prompts["model-front"].includes("25至35岁"), false);
   assert.equal(prompts["model-front"].includes("头发蓬松但整洁"), false);
+});
+
+test("a model reference switches all model prompts to reference-locked mode", () => {
+  const input = normalizeProductSuiteInput({
+    modelReferenceImage: { fileName: "model.jpg", mimeType: "image/jpeg", dataUrl: "data:image/jpeg;base64,AAAA" },
+    modelReferenceAnalysis: {
+      ageAppearance: "28岁左右观感",
+      genderPresentation: "女性",
+      face: "鹅蛋脸，五官比例自然",
+      skin: "浅暖肤色，过渡自然",
+      hair: { style: "肩下自然披发", length: "中长发", texture: "柔软微蓬松", color: "浅金棕色" },
+      body: { silhouette: "健康匀称", shoulder: "约为头宽2倍", waistHips: "腰臀比例自然", limbs: "四肢比例协调" },
+      expression: "冷静自然",
+      pose: "自然站立",
+      camera: "正面棚拍",
+    },
+  });
+  const prompts = buildProductSuitePrompts(input);
+
+  for (const slot of ["model-front", "model-angle", "model-back"]) {
+    assert.match(prompts[slot], /模特参考图为人物唯一身份与外观来源/);
+    assert.match(prompts[slot], /不得复制模特参考图中的服装/);
+    assert.match(prompts[slot], /28岁左右观感/);
+    assert.match(prompts[slot], /浅金棕色/);
+    assert.equal(prompts[slot].includes("体型为身材健康匀称、略带自然曲线感"), false);
+  }
+  assert.equal(prompts["product-3d"].includes("模特参考图"), false);
+});
+
+test("selected hair color is validated and rendered into model prompts", () => {
+  const input = normalizeProductSuiteInput({ hairColor: "blonde" });
+  assert.equal(validateProductSuiteInput(input, [{ dataUrl: "data:image/png;base64,AA==" }]).length, 0);
+  assert.match(buildProductSuitePrompts(input)["model-front"], /金色/);
+  assert.ok(validateProductSuiteInput({ ...input, hairColor: "unknown" }, [{ dataUrl: "data:image/png;base64,AA==" }]).some((error) => error.includes("发色")));
 });
 
 test("selected model profile remains authoritative over an edited model prompt", () => {
@@ -97,14 +133,14 @@ test("model prompts include the requested shoulder-to-head proportion", () => {
 
 test("front model prompt uses the detailed fashion direction and background-specific copy", () => {
   const whitePrompt = buildProductSuitePrompts(normalizeProductSuiteInput({}))["model-front"];
-  assert.match(whitePrompt, /画面中是一位年轻女性模特。模特年龄为25至35岁，体型为身材健康匀称、略带自然曲线感，腰臀比例自然，双腿修长。/);
+  assert.match(whitePrompt, /画面中是一位年轻女性模特。模特年龄为25至35岁，体型严格按照用户选择的身材健康匀称、略带自然曲线感，腰臀比例自然，双腿修长生成。/);
   assert.match(whitePrompt, /颜色、版型、领口、肩带\/袖子结构、衣长、腰线、下摆、图案、印花位置、刺绣、纽扣、缝线、面料纹理以及整体比例/);
   assert.match(whitePrompt, /正面面对镜头站立/);
   assert.match(whitePrompt, /90年代末至2000年代初时尚内衣广告/);
   assert.match(whitePrompt, /背景为浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线。/);
 
   const customPrompt = buildProductSuitePrompts(normalizeProductSuiteInput({ backgroundMode: "custom" }))["model-front"];
-  assert.match(customPrompt, /背景使用用户上传的统一背景图，并与整套图片保持一致。/);
+  assert.match(customPrompt, /背景使用用户上传的统一背景图，并与整套图片保持一致，最终合成中保持底图不变。/);
   assert.equal(customPrompt.includes("背景为纯净浅灰偏白色无缝摄影棚背景"), false);
 });
 
@@ -140,11 +176,11 @@ test("product suite no longer exposes a product detail generation slot", () => {
   assert.equal(prompts["product-detail"], undefined);
 });
 
-test("new product suite prompts do not inject the retired overall visual style", () => {
+test("new product suite prompts use the fixed ecommerce visual style instead of a removed style field", () => {
   const prompts = buildProductSuitePrompts({ style: "这段旧风格不应再被使用" });
   for (const prompt of Object.values(prompts)) {
-    assert.equal(prompt.includes("整体风格"), false);
-    assert.equal(prompt.includes("高级电商摄影，真实、干净、突出商品"), false);
+    assert.equal(prompt.includes("这段旧风格不应再被使用"), false);
+    if (!prompt.includes("Ghost Mannequin")) assert.match(prompt, /整体风格：高级电商摄影，真实、干净、突出商品。/);
   }
 });
 
@@ -167,6 +203,21 @@ test("side and back references include the completed front image as an identity 
   assert.deepEqual(productSuiteHelpers.productSuiteReferenceImages("model-front", "product-url", "background-url", "front-url"), [
     { url: "product-url", fileName: "product-cutout.png" },
     { url: "background-url", fileName: "suite-background.png" },
+  ]);
+});
+
+test("all model views receive the uploaded model reference while 3D stays clothing-only", () => {
+  assert.deepEqual(productSuiteHelpers.productSuiteReferenceImages("model-front", "product-url", "", "", "model-reference-url"), [
+    { url: "product-url", fileName: "product-cutout.png" },
+    { url: "model-reference-url", fileName: "model-reference.png" },
+  ]);
+  assert.deepEqual(productSuiteHelpers.productSuiteReferenceImages("model-back", "product-url", "", "front-url", "model-reference-url"), [
+    { url: "product-url", fileName: "product-cutout.png" },
+    { url: "model-reference-url", fileName: "model-reference.png" },
+    { url: "front-url", fileName: "model-front-identity.png" },
+  ]);
+  assert.deepEqual(productSuiteHelpers.productSuiteReferenceImages("product-3d", "product-url", "", "", "model-reference-url"), [
+    { url: "product-url", fileName: "product-cutout.png" },
   ]);
 });
 
