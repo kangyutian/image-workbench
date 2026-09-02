@@ -106,11 +106,11 @@ export function createMcpOperations(deps) {
     }),
 
     createProductSuite: async (input) => rememberOrCreate(deps, "create_product_suite", input.idempotency_key, async () => {
-      const productImage = await deps.resolveMediaRef(input.product_image, { mediaKind: "image", owner: deps.owner });
+      const productImages = await resolveMedia(deps, input.product_images?.length ? input.product_images : [input.product_image], "image");
       const backgroundImage = input.background_image ? await deps.resolveMediaRef(input.background_image, { mediaKind: "image", owner: deps.owner }) : null;
       const modelReferenceImage = input.model_reference_image ? await deps.resolveMediaRef(input.model_reference_image, { mediaKind: "image", owner: deps.owner }) : null;
       const suiteInput = {
-        images: [productImage],
+        images: productImages,
         backgroundImages: backgroundImage ? [backgroundImage] : [],
         ...(modelReferenceImage ? { modelReferenceImage } : {}),
         backgroundMode: backgroundImage ? "custom" : "white",

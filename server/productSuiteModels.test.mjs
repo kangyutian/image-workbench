@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./productSuiteModels.mjs";
+import { PRODUCT_SUITE_MAX_PRODUCT_IMAGES, PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, validateProductSuiteInput } from "./productSuiteModels.mjs";
 import * as productSuiteHelpers from "./productSuiteModels.mjs";
 
 test("product suite defaults to female balanced, white background, natural hair color, Kling O3 and four prompts", () => {
@@ -164,7 +164,8 @@ test("3D product prompt uses the ghost mannequin apparel presentation", () => {
   assert.match(prompt, /Ghost Mannequin \/ Invisible Mannequin 隐形模特效果/);
   assert.match(prompt, /上衣位于画面上方，下装位于画面下方，中间保留适当间距/);
   assert.match(prompt, /颜色、领口、袖型、袖长、肩线、衣长、腰线、裤腰高度、裤腿长度、剪裁、缝线、包边、图案、印花、面料纹理和整体比例/);
-  assert.match(prompt, /暖米灰色 \/ 浅米色渐变摄影棚背景/);
+  assert.match(prompt, /浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线/);
+  assert.equal(prompt.includes("暖米灰色 / 浅米色渐变摄影棚背景"), false);
   assert.match(prompt, /premium ecommerce product photography/);
   assert.equal(prompt.includes("皮肤有自然微光"), false);
 });
@@ -204,6 +205,34 @@ test("side and back references include the completed front image as an identity 
     { url: "product-url", fileName: "product-cutout.png" },
     { url: "background-url", fileName: "suite-background.png" },
   ]);
+});
+
+test("product suite accepts multiple product references up to ten images", () => {
+  const input = normalizeProductSuiteInput({});
+  const validImages = Array.from({ length: PRODUCT_SUITE_MAX_PRODUCT_IMAGES }, (_, index) => ({ dataUrl: `data:image/png;base64,${index + 1}` }));
+
+  assert.deepEqual(validateProductSuiteInput(input, validImages), []);
+  assert.ok(validateProductSuiteInput(input, [...validImages, { dataUrl: "data:image/png;base64,11" }]).some((error) => error.includes("最多上传 10 张")));
+});
+
+test("product suite passes all available product references into image generation", () => {
+  const references = productSuiteHelpers.productSuiteReferenceImages("product-3d", "product-cutout-url", "", "", "", ["product-front-url", "product-side-url"]);
+
+  assert.deepEqual(references, [
+    { url: "product-cutout-url", fileName: "product-cutout.png" },
+    { url: "product-front-url", fileName: "product-reference-1.png" },
+    { url: "product-side-url", fileName: "product-reference-2.png" },
+  ]);
+});
+
+test("product suite keeps generated reference requests within the ten-image provider limit", () => {
+  const references = productSuiteHelpers.productSuiteReferenceImages("model-back", "product-cutout-url", "background-url", "front-url", "model-reference-url", Array.from({ length: 10 }, (_, index) => `product-${index + 1}-url`));
+
+  assert.equal(references.length, 10);
+  assert.equal(references[0].fileName, "product-cutout.png");
+  assert.equal(references[6].fileName, "product-reference-6.png");
+  assert.equal(references[6].url, "product-6-url");
+  assert.equal(references.at(-1).fileName, "model-front-identity.png");
 });
 
 test("all model views receive the uploaded model reference while 3D stays clothing-only", () => {

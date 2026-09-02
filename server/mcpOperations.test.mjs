@@ -110,3 +110,23 @@ test("maps product suite model reference and independent appearance selectors", 
   assert.equal(created[0].input.skinTone, "fair");
   assert.deepEqual(queued.map((task) => task.id), ["suite-task-1"]);
 });
+
+test("maps multiple product suite reference images", async () => {
+  const { deps, created, queued } = fixture();
+  deps.createProductSuite = async (input) => {
+    const suite = { id: "suite-multi", status: "queued", input, items: [] };
+    const task = { id: "suite-task-multi", status: "queued", kind: "suite", input };
+    created.push(task);
+    return { suite, task };
+  };
+  deps.publicSuite = (suite) => suite;
+  const operations = createMcpOperations(deps);
+
+  await operations.createProductSuite({
+    idempotency_key: "suite-request-multi",
+    product_images: [{ media_id: "product-front" }, { media_id: "product-side" }, { media_id: "product-back" }],
+  });
+
+  assert.deepEqual(created[0].input.images.map((image) => image.stagedUploadId), ["product-front", "product-side", "product-back"]);
+  assert.deepEqual(queued.map((task) => task.id), ["suite-task-multi"]);
+});

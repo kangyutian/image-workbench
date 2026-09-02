@@ -189,7 +189,7 @@ export function publicTask(task) {
 
 export function publicProductSuite(suite) {
   const clone = JSON.parse(JSON.stringify(suite));
-  for (const key of ["owner", "accountId", "sourceImage", "backgroundImage", "modelReferenceImage", "modelReferenceAnalysis", "modelReferenceAnalysisUsage", "modelReferenceUrl", "predictionIds", "billingRecords"]) delete clone[key];
+  for (const key of ["owner", "accountId", "sourceImage", "sourceImages", "productReferenceUrls", "backgroundImage", "modelReferenceImage", "modelReferenceAnalysis", "modelReferenceAnalysisUsage", "modelReferenceUrl", "predictionIds", "billingRecords"]) delete clone[key];
   if (clone.input && typeof clone.input === "object") {
     delete clone.input.backgroundImages;
     delete clone.input.modelReferenceAnalysis;

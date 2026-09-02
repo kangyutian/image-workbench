@@ -48,6 +48,7 @@ import type {
 } from "./types";
 
 const MAX_TASKS = 10;
+const MAX_PRODUCT_SUITE_IMAGES = 10;
 const CONCURRENCY = 3;
 const DEFAULT_NANO_MODEL: NanoModelId = "nano-banana-2-fast";
 const DEFAULT_GROK_MODEL: NanoModelId = "grok-2-image";
@@ -412,7 +413,7 @@ function App() {
   const [printError, setPrintError] = useState("");
   const [isImportingPrint, setIsImportingPrint] = useState(false);
   const [productSuites, setProductSuites] = useState<ProductSuite[]>([]);
-  const [suiteImage, setSuiteImage] = useState<ProductSuiteMedia | null>(null);
+  const [suiteImages, setSuiteImages] = useState<ProductSuiteMedia[]>([]);
   const [suiteBackground, setSuiteBackground] = useState<ProductSuiteMedia | null>(null);
   const [suiteModel, setSuiteModel] = useState<ProductSuiteModel>("kling");
   const [suiteGender, setSuiteGender] = useState<ProductSuiteGender>("female");
@@ -520,14 +521,31 @@ function App() {
     return image;
   }
 
+  async function addSuiteImages(fileList: FileList | File[]) {
+    const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    if (suiteImages.length + files.length > MAX_PRODUCT_SUITE_IMAGES) {
+      setSuiteError(`商品套图最多上传 ${MAX_PRODUCT_SUITE_IMAGES} 张商品图片。`);
+      return;
+    }
+    try {
+      const images = await readImages(files);
+      if (!images.length) throw new Error("图片读取失败。");
+      setSuiteImages((current) => [...current, ...images]);
+      setSuiteError("");
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "图片读取失败。");
+    }
+  }
+
   async function submitProductSuite() {
-    if (!suiteImage) { setSuiteError("请先上传商品图片。"); return; }
+    if (!suiteImages.length) { setSuiteError("请先上传商品图片。"); return; }
     if (suiteBackgroundMode === "custom" && !suiteBackground) { setSuiteError("请选择一张自定义背景图片。"); return; }
     setSuiteSubmitting(true);
     setSuiteError("");
     try {
       const suite = await createProductSuite({
-        images: [suiteImage],
+        images: suiteImages,
         ...(suiteBackgroundMode === "custom" && suiteBackground ? { backgroundImages: [suiteBackground] } : {}),
         model: suiteModel,
         gender: suiteGender,
@@ -1090,16 +1108,16 @@ function App() {
     return (
       <section className="panel product-suite-panel">
         <div className="batch-heading">
-          <div><p className="eyebrow">Product Detail Suite</p><h2>商品详情页主图套图</h2><span>上传一张商品图，自动抠图并生成 4 张统一风格的详情页主图。</span></div>
+          <div><p className="eyebrow">Product Detail Suite</p><h2>商品详情页主图套图</h2><span>上传 1–10 张商品参考图，自动抠图并生成 4 张统一风格的详情页主图。</span></div>
           <span className="suite-spec-badge">4:5 · 2K · 4 张</span>
         </div>
         <div className="product-suite-form-grid">
           <div className="suite-upload-stack">
             <div className="dropzone suite-upload-zone">
-              {suiteImage ? <img className="suite-source-preview" src={suiteImage.dataUrl} alt="商品原图" /> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>必填，支持 JPG、PNG、WebP</span></>}
-              <button className="secondary" type="button" onClick={() => suiteImageInputRef.current?.click()}>{suiteImage ? "替换商品图" : "选择商品图"}</button>
-              {suiteImage && <button className="ghost" type="button" onClick={() => setSuiteImage(null)}><Trash2 size={16} />移除</button>}
-              <input ref={suiteImageInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteImage).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+              {suiteImages.length ? <div className="suite-source-gallery">{suiteImages.map((image, index) => <div className="suite-source-tile" key={image.id}><img className="suite-source-preview" src={image.dataUrl} alt={`商品参考图 ${index + 1}`} /><span>{index + 1}</span><button className="suite-source-remove" type="button" aria-label={`移除商品参考图 ${index + 1}`} onClick={() => setSuiteImages((current) => current.filter((candidate) => candidate.id !== image.id))}><X size={14} /></button></div>)}</div> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>必填，支持 JPG、PNG、WebP，可上传多张参考</span></>}
+              <div className="suite-upload-actions"><button className="secondary" type="button" disabled={suiteImages.length >= MAX_PRODUCT_SUITE_IMAGES} onClick={() => suiteImageInputRef.current?.click()}>{suiteImages.length ? "添加商品图" : "选择商品图"}</button>{suiteImages.length > 0 && <button className="ghost" type="button" onClick={() => setSuiteImages([])}><Trash2 size={16} />清空</button>}</div>
+              <span className="suite-upload-count">已选择 {suiteImages.length} / {MAX_PRODUCT_SUITE_IMAGES} 张；首张用于自动抠图，其余图片用于补充商品细节参考</span>
+              <input ref={suiteImageInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void addSuiteImages(event.currentTarget.files || []).finally(() => { event.currentTarget.value = ""; }); }} />
             </div>
             <div className="suite-background-card">
               <div className="suite-section-heading"><strong>统一背景</strong><span>默认浅灰偏白色无缝摄影棚背景，也可上传自定义背景</span></div>
@@ -1148,6 +1166,10 @@ function App() {
       </article>)}</div>}
     </section>;
   }
+
+  const visibleTasks = creationKind === "print"
+    ? tasks.filter((task) => task.preset === "print-extraction")
+    : tasks.filter((task) => task.preset !== "print-extraction");
 
   const creationTitle = creationKind === "image" ? "图片创作" : creationKind === "video" ? "视频创作" : creationKind === "print" ? "印花提取" : creationKind === "suite" ? "商品套图" : "产品抠图";
 
@@ -1342,24 +1364,24 @@ function App() {
         {cutoutError && <div className="error-box">{cutoutError}</div>}
       </section>}
 
-      <section className={`task-workspace ${creationKind === "image" ? "image-task-workspace" : creationKind === "suite" ? "suite-task-workspace" : "batch-task-workspace"}`}>
+      {(creationKind === "image" || creationKind === "print") && <section className={`task-workspace ${creationKind === "image" ? "image-task-workspace" : "batch-task-workspace"}`}>
         <div className="mode-banner">
           <div>
             <p className="eyebrow">Task Queue</p>
-            <h2>单独任务板块</h2>
+            <h2>{creationKind === "print" ? "印花任务" : "图片任务"}</h2>
           </div>
           <span>每个 task 都有独立提示词、参考图、参数、生成按钮和出图位置。</span>
         </div>
 
-        {tasks.length === 0 ? (
+        {visibleTasks.length === 0 ? (
           <div className="panel empty-state task-empty-state">
             <ImagePlus size={30} />
-            <strong>还没有任务</strong>
-            <span>先点击顶部“添加任务”，最多添加 10 个 task。</span>
+            <strong>{creationKind === "print" ? "还没有印花任务" : "还没有图片任务"}</strong>
+            <span>{creationKind === "print" ? "上传服装图片并创建提取任务后，结果会显示在这里。" : "先点击顶部“添加任务”，最多添加 10 个 task。"}</span>
           </div>
         ) : (
-          <div className={`task-list ${creationKind === "image" ? "image-task-grid" : creationKind === "suite" ? "" : "batch-task-grid"}`}>
-            {tasks.map((task, taskIndex) => {
+          <div className={`task-list ${creationKind === "image" ? "image-task-grid" : "batch-task-grid"}`}>
+            {visibleTasks.map((task, taskIndex) => {
               const mode = resolveMode(task.images.length);
               const totalSize = task.images.reduce((sum, image) => sum + (image.size ?? 0), 0);
               const taskSupportsQuality = supportsQuality(task.provider);
@@ -1637,11 +1659,11 @@ function App() {
             })}
           </div>
         )}
-      </section>
-      <section className="video-queue-section">
+      </section>}
+      {creationKind === "video" && <section className="video-queue-section">
         <div className="mode-banner"><div><p className="eyebrow">Concurrent queue</p><h2>视频任务队列</h2></div><div className="task-filter" role="tablist" aria-label="任务类型筛选"><button className={taskFilter === "all" ? "active" : ""} onClick={() => setTaskFilter("all")} type="button">全部任务</button><button className={taskFilter === "image" ? "active" : ""} onClick={() => setTaskFilter("image")} type="button">图片任务</button><button className={taskFilter === "video" ? "active" : ""} onClick={() => setTaskFilter("video")} type="button">视频任务</button></div></div>
         {taskFilter !== "image" && (videoTasks.length === 0 ? <div className="panel empty-state task-empty-state"><Video size={30} /><strong>还没有视频任务</strong><span>创建后会在这里显示进度、预览和下载。</span></div> : <div className="video-task-list">{videoTasks.map((task) => <article className="panel video-task-card" key={task.id}><div><p className="eyebrow">Video task</p><h3>{videoModelLabels[task.input.modelId]}</h3><span className={`status-pill status-${task.status === "done" ? "done" : task.status === "error" || task.status === "cancelled" ? "error" : "running"}`}>{task.status === "queued" ? "排队中" : task.status === "running" ? "生成中" : task.status === "done" ? "已完成" : task.status === "cancelled" ? "已取消" : task.status === "cancel_requested" ? "取消处理中" : "失败"}</span><p className="muted">{task.input.prompt || "未填写动作提示词"}</p>{task.error && <div className="error-box">{task.error}</div>}<div className="task-actions">{task.status === "error" && <button className="secondary" type="button" onClick={() => void retryVideoTask(task.id).then(updateVideoTask).catch((error) => setVideoError(error.message))}><RefreshCcw size={16} />重试</button>}{(task.status === "queued" || task.status === "running") && <button className="ghost danger-ghost" type="button" onClick={() => void cancelVideoTask(task.id).then(updateVideoTask).catch((error) => setVideoError(error.message))}>取消</button>}</div></div><div className="video-output">{task.results[0]?.url ? <><video controls preload="metadata" src={task.results[0].url} /><a className="secondary" href={task.results[0].url} target="_blank" rel="noreferrer"><Download size={16} />下载视频</a></> : <div className="empty-state task-output-empty">{task.status === "running" || task.status === "queued" ? <Loader2 className="spin" size={28} /> : <Video size={28} />}<strong>{task.status === "queued" ? "等待共享执行槽位" : task.status === "running" ? "正在生成视频" : "结果会显示在这里"}</strong></div>}</div></article>)}</div>)}
-      </section>
+      </section>}
       {creationKind === "cutout" && <section className="video-queue-section cutout-queue-section">
         <div className="mode-banner"><div><p className="eyebrow">Cutout queue</p><h2>抠图任务队列</h2></div><span>每张产品图独立处理，可与图片和视频任务同时运行。</span></div>
         {cutoutTasks.length === 0 ? <div className="panel empty-state task-empty-state"><Scissors size={30} /><strong>还没有抠图任务</strong><span>上传产品图并创建任务后，结果会显示在这里。</span></div> : <div className="video-task-list">{cutoutTasks.map((task) => <article className="panel video-task-card cutout-task-card" key={task.id}><div><p className="eyebrow">Product cutout</p><h3>{task.input.backgroundMode === "white" ? "白底产品图" : "透明底产品图"}</h3><span className={`status-pill status-${task.status === "done" ? "done" : task.status === "error" ? "error" : "running"}`}>{task.status === "queued" ? "排队中" : task.status === "running" ? "抠图中" : task.status === "done" ? "已完成" : "失败"}</span><p className="muted">{task.input.prompt}</p>{task.error && <div className="error-box">{task.error}</div>}</div><div className={`cutout-output ${task.input.backgroundMode === "transparent" ? "checkerboard" : "whiteboard"}`}>{task.results[0]?.url ? <><img src={task.results[0].url} alt="抠图结果" /><a className="secondary" href={task.results[0].url} target="_blank" rel="noreferrer"><Download size={16} />下载图片</a></> : <div className="empty-state task-output-empty"><Scissors size={28} /><strong>{task.status === "queued" ? "等待共享执行槽位" : task.status === "running" ? "正在处理产品边缘" : "结果会显示在这里"}</strong></div>}</div></article>)}</div>}

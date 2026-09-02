@@ -13,6 +13,8 @@ export const PRODUCT_SUITE_MODELS = [
   { id: "image2", label: "Image 2", provider: "image2", nanoModel: "gpt-image-2" },
 ];
 
+export const PRODUCT_SUITE_MAX_PRODUCT_IMAGES = 10;
+
 const GENDERS = new Set(["female", "male"]);
 const BODY_TYPES = new Set(["slim", "balanced", "athletic", "muscular", "plus", "curvy", "hourglass"]);
 const AGE_RANGES = new Set(["18-24", "25-35", "36-45", "46-55", "56-plus"]);
@@ -107,7 +109,8 @@ export function productSuiteImageModel(model = "kling") {
 
 export function validateProductSuiteInput(input = {}, images = []) {
   const errors = [];
-  if (!Array.isArray(images) || images.length !== 1) errors.push("商品套图必须上传 1 张商品图片。");
+  if (!Array.isArray(images) || images.length === 0) errors.push("商品套图至少上传 1 张商品图片。");
+  else if (images.length > PRODUCT_SUITE_MAX_PRODUCT_IMAGES) errors.push(`商品套图最多上传 ${PRODUCT_SUITE_MAX_PRODUCT_IMAGES} 张商品图片。`);
   if (!GENDERS.has(input.gender)) errors.push("模特性别参数无效。");
   if (!BODY_TYPES.has(input.bodyType)) errors.push("模特体型参数无效。");
   if (!AGE_RANGES.has(input.ageRange)) errors.push("模特年龄参数无效。");
@@ -137,7 +140,7 @@ export function defaultProductSuitePrompts(input = {}) {
     productReferenceDirection: "服装自然贴合模特身体，严格还原商品颜色、版型、结构、图案、缝线、面料纹理和整体比例。",
     modelReferenceDirection: referenceDirection,
     backgroundDescription: normalized.backgroundMode === "custom" ? "背景使用用户上传的统一背景图，并与整套图片保持一致，最终合成中保持底图不变。" : "背景为浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线。",
-    product3dBackground: normalized.backgroundMode === "custom" ? "背景使用用户上传的统一背景图，并与整套图片保持一致，最终合成中保持底图不变。" : "背景为暖米灰色 / 浅米色渐变摄影棚背景，简洁干净，没有任何其他物品。",
+    product3dBackground: normalized.backgroundMode === "custom" ? "背景使用用户上传的统一背景图，并与整套图片保持一致，最终合成中保持底图不变。" : "背景为浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线。",
   };
   return Object.fromEntries(PRODUCT_SUITE_SLOTS.map(({ slot }) => [slot, renderPrompt(slot, values, normalized.hasModelReference)]));
 }
@@ -187,8 +190,14 @@ export function productSuiteGenerationPlan(items = [], retrySlot = "") {
   };
 }
 
-export function productSuiteReferenceImages(slot, productUrl, backgroundUrl = "", frontImageUrl = "", modelReferenceUrl = "") {
+export function productSuiteReferenceImages(slot, productUrl, backgroundUrl = "", frontImageUrl = "", modelReferenceUrl = "", productReferenceUrls = []) {
   const references = [{ url: productUrl, fileName: "product-cutout.png" }];
+  const reservedReferences = [backgroundUrl, PRODUCT_SUITE_MODEL_SLOTS.has(slot) && modelReferenceUrl, PRODUCT_SUITE_IDENTITY_DEPENDENT_SLOTS.has(slot) && frontImageUrl].filter(Boolean).length;
+  const maxProductReferences = Math.max(0, PRODUCT_SUITE_MAX_PRODUCT_IMAGES - reservedReferences - 1);
+  const productReferences = (Array.isArray(productReferenceUrls) ? productReferenceUrls : []).filter((url) => Boolean(url) && url !== productUrl).slice(0, maxProductReferences);
+  for (const [index, url] of productReferences.entries()) {
+    references.push({ url, fileName: `product-reference-${index + 1}.png` });
+  }
   if (backgroundUrl) references.push({ url: backgroundUrl, fileName: "suite-background.png" });
   if (PRODUCT_SUITE_MODEL_SLOTS.has(slot) && modelReferenceUrl) references.push({ url: modelReferenceUrl, fileName: "model-reference.png" });
   if (PRODUCT_SUITE_IDENTITY_DEPENDENT_SLOTS.has(slot) && frontImageUrl) references.push({ url: frontImageUrl, fileName: "model-front-identity.png" });

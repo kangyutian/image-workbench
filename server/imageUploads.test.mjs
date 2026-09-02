@@ -137,9 +137,11 @@ test("public task responses translate the raw upstream fetch failure", () => {
   assert.equal(task.error, "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。");
 });
 
-test("public product suite responses never include embedded background bytes or private model analysis", () => {
-  const suite = publicProductSuite({ id: "suite-1", input: { backgroundImages: [{ dataUrl: "data:image/png;base64,AAAA" }], modelReferenceAnalysis: { face: "private" } }, modelReferenceImage: { stagedPath: "suite-1/2.png" }, modelReferenceAnalysis: { face: "private" }, modelReferenceAnalysisUsage: { total_tokens: 12 }, items: [] });
+test("public product suite responses never include embedded uploads or private model analysis", () => {
+  const suite = publicProductSuite({ id: "suite-1", input: { backgroundImages: [{ dataUrl: "data:image/png;base64,AAAA" }], modelReferenceAnalysis: { face: "private" } }, sourceImages: [{ stagedPath: "suite-1/0.png" }], productReferenceUrls: ["https://private.example/product.png"], modelReferenceImage: { stagedPath: "suite-1/2.png" }, modelReferenceAnalysis: { face: "private" }, modelReferenceAnalysisUsage: { total_tokens: 12 }, items: [] });
   assert.equal("backgroundImages" in (suite.input || {}), false);
+  assert.equal("sourceImages" in suite, false);
+  assert.equal("productReferenceUrls" in suite, false);
   assert.equal("modelReferenceAnalysis" in (suite.input || {}), false);
   assert.equal("modelReferenceImage" in suite, false);
   assert.equal("modelReferenceAnalysis" in suite, false);

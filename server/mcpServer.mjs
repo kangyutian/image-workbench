@@ -141,7 +141,8 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
     write: true,
     inputSchema: {
       ...baseWrite,
-      product_image: mediaRefSchema(),
+      product_image: mediaRefSchema().optional(),
+      product_images: z.array(mediaRefSchema()).min(1).max(10).optional(),
       background_image: mediaRefSchema().optional(),
       product_name: z.string().max(500).optional(),
       selling_points: z.string().max(4000).optional(),

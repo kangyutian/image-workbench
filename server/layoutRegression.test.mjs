@@ -71,6 +71,21 @@ test("product suite now exposes four generated views without the product detail 
 
   assert.match(app, /自动抠图 \+ 4 张生成/);
   assert.match(app, /固定 4 张/);
+  assert.match(app, /const MAX_PRODUCT_SUITE_IMAGES = 10/);
+  assert.match(app, /type="file" accept="image\/\*" multiple/);
+  assert.match(app, /images: suiteImages/);
   assert.match(app, /<option value="image2">Image 2<\/option>/);
   assert.doesNotMatch(app, /产品细节特写图|product-detail/);
+});
+
+test("each creation tab only renders its own task module", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(app, /\{\(creationKind === "image" \|\| creationKind === "print"\) &&/);
+  assert.match(app, /\{creationKind === "video" && <section className="video-queue-section">/);
+  assert.match(app, /\{creationKind === "cutout" && <section className="video-queue-section cutout-queue-section">/);
+  assert.match(app, /\{creationKind === "suite" && renderProductSuiteQueue\(\)\}/);
+  assert.match(app, /const visibleTasks = creationKind === "print"[\s\S]*tasks\.filter/);
+  assert.match(app, /task\.preset === "print-extraction"/);
+  assert.match(app, /task\.preset !== "print-extraction"/);
 });
