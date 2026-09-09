@@ -136,7 +136,8 @@ test("front model prompt uses the detailed fashion direction and background-spec
   assert.match(whitePrompt, /画面中是一位年轻女性模特。模特年龄为25至35岁，体型严格按照用户选择的身材健康匀称、略带自然曲线感，腰臀比例自然，双腿修长生成。/);
   assert.match(whitePrompt, /颜色、版型、领口、肩带\/袖子结构、衣长、腰线、下摆、图案、印花位置、刺绣、纽扣、缝线、面料纹理以及整体比例/);
   assert.match(whitePrompt, /正面面对镜头站立/);
-  assert.match(whitePrompt, /90年代末至2000年代初时尚内衣广告/);
+  assert.match(whitePrompt, /90年代末至2000年代初服装广告/);
+  assert.equal(whitePrompt.includes("时尚内衣广告"), false);
   assert.match(whitePrompt, /背景为浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线。/);
 
   const customPrompt = buildProductSuitePrompts(normalizeProductSuiteInput({ backgroundMode: "custom" }))["model-front"];
@@ -162,12 +163,28 @@ test("3D product prompt uses the ghost mannequin apparel presentation", () => {
   assert.match(prompt, /高真实感3D立体服装展示图/);
   assert.match(prompt, /只展示服装，不出现真人模特、不出现人体、不出现衣架/);
   assert.match(prompt, /Ghost Mannequin \/ Invisible Mannequin 隐形模特效果/);
-  assert.match(prompt, /上衣位于画面上方，下装位于画面下方，中间保留适当间距/);
-  assert.match(prompt, /颜色、领口、袖型、袖长、肩线、衣长、腰线、裤腰高度、裤腿长度、剪裁、缝线、包边、图案、印花、面料纹理和整体比例/);
+  assert.match(prompt, /上传什么就生成什么，只生成参考图中明确存在的服装单品/);
+  assert.match(prompt, /参考图只有上衣、背心、T恤等上装，只展示该上装/);
+  assert.match(prompt, /只有在参考图明确包含上下装时，才分别展示其中实际存在的每一件服装/);
+  assert.match(prompt, /颜色、领口、袖型、袖长、肩线、衣长、腰线、下摆、剪裁、缝线、包边、图案、印花、面料纹理和整体比例/);
+  assert.equal(prompt.includes("服装上下装分开悬浮展示"), false);
+  assert.equal(prompt.includes("下装位于画面下方"), false);
+  assert.equal(prompt.includes("裤腰高度"), false);
+  assert.equal(prompt.includes("裤腿长度"), false);
+  assert.equal(prompt.includes("裤裆位置"), false);
   assert.match(prompt, /浅灰偏白色无缝摄影棚背景，干净柔和，没有家具、复杂装饰或明显地平线/);
   assert.equal(prompt.includes("暖米灰色 / 浅米色渐变摄影棚背景"), false);
   assert.match(prompt, /premium ecommerce product photography/);
   assert.equal(prompt.includes("皮肤有自然微光"), false);
+});
+
+test("3D product prompt locks one level front-facing view", () => {
+  const prompt = buildProductSuitePrompts(normalizeProductSuiteInput({}))["product-3d"];
+
+  assert.match(prompt, /只允许单一正面正视图/);
+  assert.match(prompt, /镜头与服装正面平行，机位与服装中心基本齐平/);
+  assert.match(prompt, /禁止背面、侧面、三分之二视角、斜下方45度角/);
+  assert.match(prompt, /禁止俯拍、仰拍、旋转透视和多角度拼图/);
 });
 
 test("product suite no longer exposes a product detail generation slot", () => {
