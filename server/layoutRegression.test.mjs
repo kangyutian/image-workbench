@@ -31,6 +31,8 @@ test("product suite exposes the complete model profile and removes overall style
   assert.match(app, /模特发型/);
   assert.match(app, /模特外观/);
   assert.match(app, /模特肤色/);
+  assert.match(app, /gpt-image-2\.5-sunburst/);
+  assert.match(app, /GPT Image 2\.5 Sunburst/);
   assert.match(app, /模特体型/);
   assert.doesNotMatch(app, /整体视觉风格/);
   assert.doesNotMatch(app, /suiteStyle/);

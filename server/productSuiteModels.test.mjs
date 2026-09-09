@@ -49,6 +49,13 @@ test("product suite accepts Image 2 and maps it to the image2 provider", () => {
   assert.deepEqual(productSuiteHelpers.productSuiteImageModel(input.model), { provider: "image2", nanoModel: "gpt-image-2" });
 });
 
+test("product suite accepts GPT Image 2.5 Sunburst", () => {
+  const input = normalizeProductSuiteInput({ model: "image2.5-sunburst" });
+
+  assert.equal(input.model, "image2.5-sunburst");
+  assert.deepEqual(productSuiteHelpers.productSuiteImageModel(input.model), { provider: "image2", nanoModel: "gpt-image-2.5-sunburst" });
+});
+
 test("product suite accepts independent gender and body choices and custom background", () => {
   const input = normalizeProductSuiteInput({ gender: "male", bodyType: "hourglass", backgroundMode: "custom", backgroundImages: [{ dataUrl: "data:image/png;base64,AA==" }] });
   assert.equal(validateProductSuiteInput(input, [{ dataUrl: "data:image/png;base64,AA==" }]).length, 0);

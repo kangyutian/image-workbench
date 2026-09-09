@@ -11,6 +11,7 @@ export const PRODUCT_SUITE_MODELS = [
   { id: "kling", label: "Kling Image O3 Edit", provider: "kling", nanoModel: "kling-image-o3-edit" },
   { id: "nanobanana", label: "Nano Banana Pro", provider: "nanobanana", nanoModel: "nano-banana-pro" },
   { id: "image2", label: "Image 2", provider: "image2", nanoModel: "gpt-image-2" },
+  { id: "image2.5-sunburst", label: "GPT Image 2.5 Sunburst", provider: "image2", nanoModel: "gpt-image-2.5-sunburst" },
 ];
 
 export const PRODUCT_SUITE_MAX_PRODUCT_IMAGES = 10;

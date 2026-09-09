@@ -1,5 +1,5 @@
 export type ProductSuiteSlot = "product-3d" | "model-front" | "model-angle" | "model-back";
-export type ProductSuiteModel = "kling" | "nanobanana" | "image2";
+export type ProductSuiteModel = "kling" | "nanobanana" | "image2" | "image2.5-sunburst";
 export type ProductSuiteStatus = "queued" | "running" | "partial" | "done" | "error";
 export type ProductSuiteModelAnalysisStatus = "not-requested" | "queued" | "running" | "done" | "error";
 export type ProductSuiteGender = "female" | "male";

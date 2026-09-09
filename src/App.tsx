@@ -52,6 +52,7 @@ const MAX_TASKS = 10;
 const MAX_PRODUCT_SUITE_IMAGES = 10;
 const CONCURRENCY = 3;
 const DEFAULT_NANO_MODEL: NanoModelId = "nano-banana-2-fast";
+const DEFAULT_IMAGE2_MODEL: NanoModelId = "gpt-image-2.5-sunburst";
 const DEFAULT_GROK_MODEL: NanoModelId = "grok-2-image";
 const DEFAULT_KLING_MODEL: NanoModelId = "kling-image-v3-edit";
 const PRINT_EXTRACTION_PROMPT =
@@ -274,9 +275,10 @@ function supportsReferenceImages(provider: ProviderId, nanoModel: NanoModelId) {
 }
 
 function defaultModelForProvider(provider: ProviderId, current: NanoModelId) {
+  if (provider === "image2") return current.startsWith("gpt-image-") ? current : DEFAULT_IMAGE2_MODEL;
   if (provider === "grok") return current.startsWith("grok-") ? current : DEFAULT_GROK_MODEL;
   if (provider === "kling") return current.startsWith("kling-") ? current : DEFAULT_KLING_MODEL;
-  return current.startsWith("grok-") || current.startsWith("kling-") ? DEFAULT_NANO_MODEL : current;
+  return current.startsWith("nano-") ? current : DEFAULT_NANO_MODEL;
 }
 
 function aspectOptionsFor(provider: ProviderId, nanoModel: NanoModelId) {
@@ -391,7 +393,7 @@ function createVideoDraft(): VideoDraft {
 
 function App() {
   const [provider, setProvider] = useState<ProviderId>("image2");
-  const [nanoModel, setNanoModel] = useState<NanoModelId>(DEFAULT_NANO_MODEL);
+  const [nanoModel, setNanoModel] = useState<NanoModelId>(DEFAULT_IMAGE2_MODEL);
   const [aspectRatio, setAspectRatio] = useState("9:16");
   const [count, setCount] = useState(1);
   const [resolution, setResolution] = useState<Resolution>("2k");
@@ -720,8 +722,8 @@ function App() {
     setTasks((current) => current.map((task) => (task.id === taskId ? { ...task, ...next } : task)));
   }
 
-  function changeBatchProvider(nextProvider: ProviderId) {
-    const nextModel = defaultModelForProvider(nextProvider, nanoModel);
+  function changeBatchProvider(nextProvider: ProviderId, requestedModel?: NanoModelId) {
+    const nextModel = requestedModel || defaultModelForProvider(nextProvider, nanoModel);
     setProvider(nextProvider);
     setNanoModel(nextModel);
     setAspectRatio((current) => normalizeAspect(nextProvider, nextModel, current));
@@ -1155,7 +1157,7 @@ function App() {
           </div>
           <div className="suite-options-column">
             <div className="suite-option-grid">
-              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as ProductSuiteModel)}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option><option value="image2">Image 2</option></select></label>
+              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as ProductSuiteModel)}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option><option value="image2">Image 2</option><option value="image2.5-sunburst">GPT Image 2.5 Sunburst</option></select></label>
               <label className="field"><span>模特性别</span><select disabled={Boolean(suiteModelReference)} value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特体型</span><select disabled={Boolean(suiteModelReference)} value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特年龄</span><select disabled={Boolean(suiteModelReference)} value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -1262,11 +1264,11 @@ function App() {
           </details>
 
           <div className="batch-controls">
-            <label className="field global-model-field"><span>模型</span><select value={`${provider}:${nanoModel}`} onChange={(event) => { const [nextProvider, nextModel] = event.target.value.split(":") as [ProviderId, NanoModelId]; changeBatchProvider(nextProvider); if (nextProvider !== "image2") changeBatchNanoModel(nextModel); }}><option value="image2:gpt-image-2">Image 2</option>{(["nanobanana", "grok", "kling"] as ProviderId[]).flatMap((item) => imageModelsForProvider(item).map((model) => <option key={`${item}:${model.id}`} value={`${item}:${model.id}`}>{model.label}</option>))}</select></label>
+            <label className="field global-model-field"><span>模型</span><select value={`${provider}:${nanoModel}`} onChange={(event) => { const [nextProvider, nextModel] = event.target.value.split(":") as [ProviderId, NanoModelId]; changeBatchProvider(nextProvider, nextModel); }}>{(["image2", "nanobanana", "grok", "kling"] as ProviderId[]).flatMap((item) => imageModelsForProvider(item).map((model) => <option key={`${item}:${model.id}`} value={`${item}:${model.id}`}>{model.label}</option>))}</select></label>
 
-            {provider !== "image2" && (
+            <>
               <label className="field">
-                  <span>{provider === "grok" ? "Grok 图片模型" : provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
+                  <span>{provider === "image2" ? "Image 模型" : provider === "grok" ? "Grok 图片模型" : provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
                 <select className="nano-model-select" value={nanoModel} onChange={(event) => changeBatchNanoModel(event.target.value as NanoModelId)}>
                   {imageModelsForProvider(provider).map((item) => (
                     <option key={item.id} value={item.id}>
@@ -1278,7 +1280,7 @@ function App() {
                   {nanoModelInfo(nanoModel).description} {nanoModelInfo(nanoModel).useCase}
                 </small>
               </label>
-            )}
+            </>
 
             <div className="param-grid">
               <label className="field">
@@ -1447,9 +1449,8 @@ function App() {
                     </div>
 
                     <div className="task-param-controls" aria-label="任务生成参数">
-                      {task.provider !== "image2" && (
-                        <label className="mini-field wide-mini-field">
-                            <span>{task.provider === "grok" ? "Grok 图片模型" : task.provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
+                      <label className="mini-field wide-mini-field">
+                            <span>{task.provider === "image2" ? "Image 模型" : task.provider === "grok" ? "Grok 图片模型" : task.provider === "kling" ? "Kling 图片模型" : "Nano 模型档位"}</span>
                           <select
                             className="nano-model-select"
                             value={task.nanoModel}
@@ -1470,8 +1471,7 @@ function App() {
                               </option>
                             ))}
                           </select>
-                        </label>
-                      )}
+                      </label>
 
                       <label className="mini-field">
                         <span>输出图片数量</span>

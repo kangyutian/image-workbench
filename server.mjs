@@ -20,6 +20,7 @@ import {
 import { TaskStore } from "./server/taskStore.mjs";
 import { clientVideoModels, validateVideoInput, videoModelInfo, videoPayloadFor } from "./server/videoModels.mjs";
 import { envKeyForModelRequest, grokImageModelInfo, grokPayloadFor, isGrokImageRequest, normalizeGrokImageInput, validateGrokImageInput } from "./server/grokModels.mjs";
+import { envKeyForImage2Model, image2EndpointFor } from "./server/image2Models.mjs";
 import { isKlingImageRequest, klingImageModelInfo, klingImagePayloadFor, normalizeKlingImageInput, requiresDedicatedKlingImageKey, validateKlingImageInput } from "./server/klingImageModels.mjs";
 import { cutoutEndpointFor, cutoutEnvKey, cutoutPayloadFor, isCutoutRequest, normalizeCutoutInput, validateCutoutInput } from "./server/cutoutModels.mjs";
 import { UsageLedger } from "./server/usageLedger.mjs";
@@ -319,13 +320,13 @@ function cleanApiKey(rawKey = "") {
 
 function envKeyForRequest(request = {}) {
   if (isCutoutRequest(request)) return cutoutEnvKey();
-  if (request.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
+  if (request.provider === "image2") return envKeyForImage2Model(request.nanoModel);
   return envKeyForModelRequest(request);
 }
 
 function usageEnvKeyForEntry(entry = {}) {
   if (entry.kind === "image" && entry.modelId === "bria-extract-object") return cutoutEnvKey();
-  if (entry.kind === "image" && entry.provider === "image2") return "WAVESPEED_IMAGE2_KEY";
+  if (entry.kind === "image" && entry.provider === "image2") return envKeyForImage2Model(entry.modelId);
   return envKeyForModelRequest(entry.kind === "video"
     ? { kind: "video", modelId: entry.modelId }
     : { kind: "image", provider: entry.provider, nanoModel: entry.modelId });
@@ -561,7 +562,7 @@ function endpointFor(request, hasImages) {
     return model.endpoint;
   }
   if (request.provider === "image2") {
-    return hasImages ? "openai/gpt-image-2/edit" : "openai/gpt-image-2/text-to-image";
+    return image2EndpointFor(request.nanoModel, hasImages);
   }
 
   const model = nanoEndpoints[request.nanoModel] || nanoEndpoints["nano-banana-2-fast"];

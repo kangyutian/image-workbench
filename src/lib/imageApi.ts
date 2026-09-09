@@ -33,6 +33,35 @@ export const resolutionLabels: Record<Resolution, string> = {
   "4k": "4K",
 };
 
+export const image2Models: NanoModelInfo[] = [
+  {
+    id: "gpt-image-2.5-sunburst",
+    label: "GPT Image 2.5 Sunburst",
+    selectLabel: "GPT Image 2.5 Sunburst · 高精度商品图与复杂编辑",
+    shortLabel: "2.5 Sunburst",
+    description: "高精度、编辑一致性优先。",
+    useCase: "适合商品套图、服装广告、参考图编辑和精细商业视觉。",
+    supportsQuality: true,
+    textEndpoint: "openai/gpt-image-2.5-sunburst/text-to-image",
+    editEndpoint: "openai/gpt-image-2.5-sunburst/edit",
+    prices: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+    priceNote: "预估价，实际以 WaveSpeedAI 任务记录为准。",
+  },
+  {
+    id: "gpt-image-2",
+    label: "Image 2",
+    selectLabel: "Image 2 · 兼容旧版 Image 2 工作流",
+    shortLabel: "Image 2",
+    description: "Image 2 兼容模式。",
+    useCase: "适合需要保持原有 Image 2 结果和成本预估的任务。",
+    supportsQuality: true,
+    textEndpoint: "openai/gpt-image-2/text-to-image",
+    editEndpoint: "openai/gpt-image-2/edit",
+    prices: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+    priceNote: "预估价，实际以 WaveSpeedAI 任务记录为准。",
+  },
+];
+
 export const qualityUseCases: Record<Quality, string> = {
   low: "快速试图、提示词探索、低成本批量。",
   medium: "日常商用图、社媒、电商内容。",
@@ -183,10 +212,11 @@ function createId() {
 }
 
 export function nanoModelInfo(nanoModel: NanoModelId) {
-  return [...nanoModels, ...grokModels, ...klingModels].find((item) => item.id === nanoModel) ?? nanoModels[0];
+  return [...image2Models, ...nanoModels, ...grokModels, ...klingModels].find((item) => item.id === nanoModel) ?? nanoModels[0];
 }
 
 export function imageModelsForProvider(provider: ProviderId) {
+  if (provider === "image2") return image2Models;
   if (provider === "grok") return grokModels;
   if (provider === "kling") return klingModels;
   return nanoModels;

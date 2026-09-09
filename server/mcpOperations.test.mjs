@@ -46,6 +46,22 @@ test("maps MCP image models and references to the existing image task shape", as
   assert.deepEqual(queued.map((task) => task.id), ["task-1"]);
 });
 
+test("maps GPT Image 2.5 Sunburst MCP requests to image2", async () => {
+  const { deps, created, queued } = fixture();
+  const operations = createMcpOperations(deps);
+
+  await operations.createImageTask({
+    idempotency_key: "image-25-request",
+    model: "gpt-image-2.5-sunburst",
+    prompt: "premium product photo",
+    images: [],
+  });
+
+  assert.equal(created[0].input.provider, "image2");
+  assert.equal(created[0].input.nanoModel, "gpt-image-2.5-sunburst");
+  assert.deepEqual(queued.map((task) => task.id), ["task-1"]);
+});
+
 test("returns the original task for a repeated idempotency key", async () => {
   const { deps, created, queued } = fixture();
   const operations = createMcpOperations(deps);

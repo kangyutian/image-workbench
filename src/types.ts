@@ -10,7 +10,9 @@ export type NanoModelId =
   | "grok-imagine-image-quality"
   | "kling-image-v3-edit"
   | "kling-image-o3-edit"
-  | "kling-image-o1";
+  | "kling-image-o1"
+  | "gpt-image-2"
+  | "gpt-image-2.5-sunburst";
 
 export type GenerationMode = "text-to-image" | "image-to-image" | "multi-image-fusion";
 

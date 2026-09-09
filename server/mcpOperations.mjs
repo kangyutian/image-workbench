@@ -32,7 +32,8 @@ function rememberOrCreate(deps, toolName, key, create) {
 
 function imageModelRequest(model, options = {}) {
   const modelId = String(model || "");
-  if (modelId === "image2" || modelId === "image-2") return { provider: "image2", ...options };
+  if (modelId === "image2" || modelId === "image-2") return { provider: "image2", nanoModel: "gpt-image-2", ...options };
+  if (modelId === "gpt-image-2" || modelId === "gpt-image-2.5-sunburst") return { provider: "image2", nanoModel: modelId, ...options };
   if (modelId.startsWith("grok-")) return { provider: "grok", nanoModel: modelId, ...options };
   if (modelId.startsWith("kling-image-")) return { provider: "kling", nanoModel: modelId, ...options };
   return { provider: "nanobanana", nanoModel: modelId, ...options };

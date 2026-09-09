@@ -147,7 +147,7 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
       product_name: z.string().max(500).optional(),
       selling_points: z.string().max(4000).optional(),
       visual_style: z.string().max(2000).optional(),
-      model: z.enum(["kling", "nanobanana", "image2"]).optional(),
+      model: z.enum(["kling", "nanobanana", "image2", "image2.5-sunburst"]).optional(),
       gender: z.enum(["female", "male"]).optional(),
       body_type: z.enum(["slim", "balanced", "athletic", "muscular", "plus", "curvy", "hourglass", "fat", "voluptuous"]).optional(),
       age_range: z.enum(["18-24", "25-35", "36-45", "46-55", "56-plus"]).optional(),
