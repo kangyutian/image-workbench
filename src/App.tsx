@@ -19,7 +19,7 @@ import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploa
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
 import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
 import { prepareProductSuiteImage } from "./lib/productSuiteImageCompression";
-import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
+import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteModelAppearance, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
@@ -70,6 +70,20 @@ const productSuiteAgeLabels: Record<ProductSuiteAgeRange, string> = { "18-24": "
 const productSuiteHairLabels: Record<ProductSuiteHairStyle, string> = { "natural-loose": "蓬松自然披发", "long-straight": "长发直发披肩", "long-wavy": "长发自然卷", "low-ponytail": "低马尾", "high-ponytail": "高马尾", short: "短发", bob: "中短波波头" };
 const productSuiteHairColorLabels: Record<ProductSuiteHairColor, string> = { natural: "自然发色", black: "自然黑色", "dark-brown": "深棕色", "light-brown": "浅棕色", blonde: "金色", "copper-red": "红棕 / 铜色", "silver-gray": "灰银色" };
 const productSuiteSkinLabels: Record<ProductSuiteSkinTone, string> = { natural: "自然真实肤色", fair: "自然浅肤色", medium: "自然中等肤色", tan: "自然小麦肤色", deep: "自然深肤色" };
+const productSuiteAppearanceLabels: Record<ProductSuiteModelAppearance, string> = {
+  unspecified: "不指定 / Natural diversity",
+  white: "白人外观 / White",
+  black: "黑人或非洲裔美国人外观 / Black · African American",
+  "east-asian": "东亚外观 / East Asian",
+  "south-asian": "南亚外观 / South Asian",
+  "southeast-asian": "东南亚外观 / Southeast Asian",
+  "hispanic-latino": "拉丁裔或西语裔外观 / Hispanic · Latino",
+  mena: "中东或北非外观 / Middle Eastern · North African",
+  indigenous: "原住民或美洲原住民外观 / Indigenous · Native American",
+  "pacific-islander": "夏威夷原住民或太平洋岛民外观 / Pacific Islander",
+  mixed: "多族裔或混合族裔外观 / Mixed · Multiracial",
+  custom: "自定义外观 / Custom",
+};
 
 const modeLabels: Record<GenerationMode, string> = {
   "text-to-image": "文生图",
@@ -422,6 +436,8 @@ function App() {
   const [suiteAgeRange, setSuiteAgeRange] = useState<ProductSuiteAgeRange>("25-35");
   const [suiteHairStyle, setSuiteHairStyle] = useState<ProductSuiteHairStyle>("natural-loose");
   const [suiteHairColor, setSuiteHairColor] = useState<ProductSuiteHairColor>("natural");
+  const [suiteModelAppearance, setSuiteModelAppearance] = useState<ProductSuiteModelAppearance>("unspecified");
+  const [suiteModelAppearanceCustom, setSuiteModelAppearanceCustom] = useState("");
   const [suiteSkinTone, setSuiteSkinTone] = useState<ProductSuiteSkinTone>("natural");
   const [suiteModelReference, setSuiteModelReference] = useState<ProductSuiteMedia | null>(null);
   const [suiteBackgroundMode, setSuiteBackgroundMode] = useState<"white" | "custom">("white");
@@ -552,6 +568,8 @@ function App() {
         ageRange: suiteAgeRange,
         hairStyle: suiteHairStyle,
         hairColor: suiteHairColor,
+        modelAppearance: suiteModelAppearance,
+        ...(suiteModelAppearance === "custom" && suiteModelAppearanceCustom.trim() ? { modelAppearanceCustom: suiteModelAppearanceCustom.trim() } : {}),
         skinTone: suiteSkinTone,
         ...(suiteModelReference ? { modelReferenceImage: suiteModelReference } : {}),
         backgroundMode: suiteBackgroundMode,
@@ -1143,9 +1161,12 @@ function App() {
               <label className="field"><span>模特年龄</span><select disabled={Boolean(suiteModelReference)} value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特发型</span><select disabled={Boolean(suiteModelReference)} value={suiteHairStyle} onChange={(event) => setSuiteHairStyle(event.target.value as ProductSuiteHairStyle)}>{Object.entries(productSuiteHairLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <label className="field"><span>模特发色</span><select disabled={Boolean(suiteModelReference)} value={suiteHairColor} onChange={(event) => setSuiteHairColor(event.target.value as ProductSuiteHairColor)}>{Object.entries(productSuiteHairColorLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="field"><span>模特外观 / Model appearance</span><select disabled={Boolean(suiteModelReference)} value={suiteModelAppearance} onChange={(event) => setSuiteModelAppearance(event.target.value as ProductSuiteModelAppearance)}>{Object.entries(productSuiteAppearanceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              {suiteModelAppearance === "custom" && <label className="field"><span>自定义模特外观</span><input disabled={Boolean(suiteModelReference)} maxLength={120} value={suiteModelAppearanceCustom} onChange={(event) => setSuiteModelAppearanceCustom(event.target.value)} placeholder="例如：Afro-Latina with natural curly hair" /></label>}
               <label className="field"><span>模特肤色</span><select disabled={Boolean(suiteModelReference)} value={suiteSkinTone} onChange={(event) => setSuiteSkinTone(event.target.value as ProductSuiteSkinTone)}>{Object.entries(productSuiteSkinLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             </div>
-            {suiteModelReference && <div className="suite-reference-lock-note">已上传模特参考图，上传参考图后以参考图为准；六项外观选项仅作记录并已禁用，生成时以参考图和 Sol 分析结果为准。</div>}
+            {!suiteModelReference && <div className="suite-reference-lock-note">用于引导生成模特外观，不代表用户身份；肤色可单独调整。上传模特参考图后，以参考图和 Sol 分析结果为准。</div>}
+            {suiteModelReference && <div className="suite-reference-lock-note">已上传模特参考图，上传参考图后以参考图为准；七项外观选项仅作记录并已禁用，生成时以参考图和 Sol 分析结果为准。</div>}
             <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
             <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
             <div className="suite-submit-row"><div><strong>自动抠图 + 4 张生成</strong><span>三视图共享同一位模特身份，失败后可单独重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>

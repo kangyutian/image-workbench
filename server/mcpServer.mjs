@@ -154,6 +154,8 @@ export function createMcpServer({ operations = {}, serverVersion = "1.0.0" } = {
       hair_style: z.enum(["natural-loose", "long-straight", "long-wavy", "low-ponytail", "high-ponytail", "short", "bob"]).optional(),
       hair_color: z.enum(["natural", "black", "dark-brown", "light-brown", "blonde", "copper-red", "silver-gray"]).optional(),
       skin_tone: z.enum(["natural", "fair", "medium", "tan", "deep"]).optional(),
+      model_appearance: z.enum(["unspecified", "white", "black", "east-asian", "south-asian", "southeast-asian", "hispanic-latino", "mena", "indigenous", "pacific-islander", "mixed", "custom"]).optional(),
+      model_appearance_custom: z.string().max(120).optional(),
       model_reference_image: mediaRefSchema().optional(),
       prompts: z.record(z.string(), z.string().max(4000)).optional(),
     },

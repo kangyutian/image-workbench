@@ -99,6 +99,7 @@ test("maps product suite model reference and independent appearance selectors", 
     hair_style: "long-wavy",
     hair_color: "blonde",
     skin_tone: "fair",
+    model_appearance: "black",
   });
 
   assert.equal(result.suite_id, "suite-1");
@@ -108,6 +109,7 @@ test("maps product suite model reference and independent appearance selectors", 
   assert.equal(created[0].input.ageRange, "25-35");
   assert.equal(created[0].input.hairStyle, "long-wavy");
   assert.equal(created[0].input.skinTone, "fair");
+  assert.equal(created[0].input.modelAppearance, "black");
   assert.deepEqual(queued.map((task) => task.id), ["suite-task-1"]);
 });
 

@@ -5,7 +5,7 @@ import * as productSuiteHelpers from "./productSuiteModels.mjs";
 
 test("product suite defaults to female balanced, white background, natural hair color, Kling O3 and four prompts", () => {
   const input = normalizeProductSuiteInput({});
-  assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, ageRange: input.ageRange, hairStyle: input.hairStyle, hairColor: input.hairColor, skinTone: input.skinTone, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "balanced", ageRange: "25-35", hairStyle: "natural-loose", hairColor: "natural", skinTone: "natural", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
+  assert.deepEqual({ model: input.model, nanoModel: input.nanoModel, gender: input.gender, bodyType: input.bodyType, ageRange: input.ageRange, hairStyle: input.hairStyle, hairColor: input.hairColor, skinTone: input.skinTone, modelAppearance: input.modelAppearance, backgroundMode: input.backgroundMode, aspectRatio: input.aspectRatio, resolution: input.resolution }, { model: "kling", nanoModel: "kling-image-o3-edit", gender: "female", bodyType: "balanced", ageRange: "25-35", hairStyle: "natural-loose", hairColor: "natural", skinTone: "natural", modelAppearance: "unspecified", backgroundMode: "white", aspectRatio: "4:5", resolution: "2k" });
   const prompts = buildProductSuitePrompts(input);
   assert.deepEqual(Object.keys(prompts), PRODUCT_SUITE_SLOTS.map((item) => item.slot));
   assert.deepEqual(PRODUCT_SUITE_SLOTS.map((item) => item.slot), ["product-3d", "model-front", "model-angle", "model-back"]);
@@ -21,6 +21,24 @@ test("product suite defaults to female balanced, white background, natural hair 
   assert.match(prompts["model-front"], /用户上传的商品图片/);
   assert.match(prompts["model-angle"], /90度侧身/);
   assert.match(prompts["model-back"], /用户上传的商品图片/);
+});
+
+test("product suite keeps model appearance independent from skin tone and renders it into model prompts", () => {
+  const input = normalizeProductSuiteInput({ modelAppearance: "black", skinTone: "medium" });
+
+  assert.equal(input.modelAppearance, "black");
+  assert.equal(input.skinTone, "medium");
+  assert.match(buildProductSuitePrompts(input)["model-front"], /黑人或非洲裔美国人外观/);
+  assert.match(productSuiteHelpers.productSuiteModelProfilePrompt(input), /不将外观类型与固定肤色绑定/);
+});
+
+test("product suite requires a description for custom model appearance", () => {
+  const input = normalizeProductSuiteInput({ modelAppearance: "custom" });
+  assert.ok(validateProductSuiteInput(input, [{ dataUrl: "data:image/png;base64,AA==" }]).some((error) => error.includes("自定义模特外观")));
+
+  const withDescription = normalizeProductSuiteInput({ modelAppearance: "custom", modelAppearanceCustom: "Afro-Latina with natural curly hair" });
+  assert.equal(validateProductSuiteInput(withDescription, [{ dataUrl: "data:image/png;base64,AA==" }]).length, 0);
+  assert.match(buildProductSuitePrompts(withDescription)["model-front"], /Afro-Latina with natural curly hair/);
 });
 
 test("product suite accepts Image 2 and maps it to the image2 provider", () => {

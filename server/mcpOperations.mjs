@@ -124,6 +124,8 @@ export function createMcpOperations(deps) {
         hairStyle: input.hair_style || "natural-loose",
         hairColor: input.hair_color || "natural",
         skinTone: input.skin_tone || "natural",
+        modelAppearance: input.model_appearance || "unspecified",
+        modelAppearanceCustom: input.model_appearance_custom || "",
         prompts: input.prompts || {},
       };
       const created = await deps.createProductSuite(suiteInput, deps.owner);
