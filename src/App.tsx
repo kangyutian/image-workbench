@@ -18,6 +18,7 @@ import {
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
 import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
+import { prepareProductSuiteImage } from "./lib/productSuiteImageCompression";
 import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
@@ -516,9 +517,7 @@ function App() {
   }
 
   async function readSuiteFile(file: File): Promise<ProductSuiteMedia> {
-    const [image] = await readImages([file]);
-    if (!image) throw new Error("图片读取失败。");
-    return image;
+    return prepareProductSuiteImage(file);
   }
 
   async function addSuiteImages(fileList: FileList | File[]) {
@@ -529,7 +528,7 @@ function App() {
       return;
     }
     try {
-      const images = await readImages(files);
+      const images = await Promise.all(files.map(prepareProductSuiteImage));
       if (!images.length) throw new Error("图片读取失败。");
       setSuiteImages((current) => [...current, ...images]);
       setSuiteError("");
@@ -1114,9 +1113,9 @@ function App() {
         <div className="product-suite-form-grid">
           <div className="suite-upload-stack">
             <div className="dropzone suite-upload-zone">
-              {suiteImages.length ? <div className="suite-source-gallery">{suiteImages.map((image, index) => <div className="suite-source-tile" key={image.id}><img className="suite-source-preview" src={image.dataUrl} alt={`商品参考图 ${index + 1}`} /><span>{index + 1}</span><button className="suite-source-remove" type="button" aria-label={`移除商品参考图 ${index + 1}`} onClick={() => setSuiteImages((current) => current.filter((candidate) => candidate.id !== image.id))}><X size={14} /></button></div>)}</div> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>必填，支持 JPG、PNG、WebP，可上传多张参考</span></>}
+              {suiteImages.length ? <div className="suite-source-gallery">{suiteImages.map((image, index) => <div className="suite-source-tile" key={image.id}><img className="suite-source-preview" src={image.dataUrl} alt={`商品参考图 ${index + 1}`} /><span>{index + 1}</span><small>{formatBytes(image.size || 0)}</small><button className="suite-source-remove" type="button" aria-label={`移除商品参考图 ${index + 1}`} onClick={() => setSuiteImages((current) => current.filter((candidate) => candidate.id !== image.id))}><X size={14} /></button></div>)}</div> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>支持 JPG、PNG、WebP；文件需小于 10MB，超限会自动压缩</span></>}
               <div className="suite-upload-actions"><button className="secondary" type="button" disabled={suiteImages.length >= MAX_PRODUCT_SUITE_IMAGES} onClick={() => suiteImageInputRef.current?.click()}>{suiteImages.length ? "添加商品图" : "选择商品图"}</button>{suiteImages.length > 0 && <button className="ghost" type="button" onClick={() => setSuiteImages([])}><Trash2 size={16} />清空</button>}</div>
-              <span className="suite-upload-count">已选择 {suiteImages.length} / {MAX_PRODUCT_SUITE_IMAGES} 张；首张用于自动抠图，其余图片用于补充商品细节参考</span>
+              <span className="suite-upload-count">已选择 {suiteImages.length} / {MAX_PRODUCT_SUITE_IMAGES} 张；首张用于自动抠图，其余图片用于补充商品细节参考。文件大小按压缩后的实际字节数计算。</span>
               <input ref={suiteImageInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void addSuiteImages(event.currentTarget.files || []).finally(() => { event.currentTarget.value = ""; }); }} />
             </div>
             <div className="suite-background-card">

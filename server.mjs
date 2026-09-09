@@ -1072,9 +1072,11 @@ async function executeProductSuiteTask(queuedTask) {
     if (status === "done" && finished.modelReferenceImage) cleanupStagedMediaReferences([finished.modelReferenceImage]);
     taskStore.patch(suiteTask.id, { status: status === "done" ? "done" : "error", error: status === "partial" ? "部分图片生成失败，请重试失败画面。" : "" });
   } catch (error) {
-    console.error("[product-suite] task failed", JSON.stringify({ suiteId: suite.id, stage, error: error instanceof Error ? error.message : "商品套图生成失败。" }));
-    productSuiteStore.patch(suite.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
-    taskStore.patch(suiteTask.id, { status: "error", error: error instanceof Error ? error.message : "商品套图生成失败。" });
+    const message = error instanceof Error ? error.message : "商品套图生成失败。";
+    console.error("[product-suite] task failed", JSON.stringify({ suiteId: suite.id, stage, error: message }));
+    productSuiteStore.failQueuedItems(suite.id, message);
+    productSuiteStore.patch(suite.id, { status: "error", error: message });
+    taskStore.patch(suiteTask.id, { status: "error", error: message });
   }
 }
 

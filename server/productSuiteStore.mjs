@@ -83,6 +83,20 @@ export class ProductSuiteStore {
     return clone(suite);
   }
 
+  failQueuedItems(id, error) {
+    const suite = this.suites.find((item) => item.id === id);
+    if (!suite) return null;
+    const now = new Date().toISOString();
+    const items = (suite.items || []).map((item) => item.status === "queued"
+      ? { ...item, status: "error", error: String(error || "商品套图生成失败。"), updatedAt: now }
+      : item);
+    suite.items = items;
+    suite.status = recomputeStatus(items);
+    suite.updatedAt = now;
+    this.write();
+    return clone(suite);
+  }
+
   remove(id) {
     const index = this.suites.findIndex((item) => item.id === id);
     if (index === -1) return null;

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { IMAGE_UPLOAD_MAX_BYTES } from "../shared/imageUploadPolicy.mjs";
 
 const extensionByMime = {
   "image/gif": ".gif",
@@ -8,7 +9,7 @@ const extensionByMime = {
   "image/webp": ".webp",
 };
 
-export const WAVESPEED_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const WAVESPEED_MAX_IMAGE_BYTES = IMAGE_UPLOAD_MAX_BYTES;
 
 export function validateWaveSpeedImageSize(size, maxBytes = WAVESPEED_MAX_IMAGE_BYTES) {
   if (Number(size) >= maxBytes) {

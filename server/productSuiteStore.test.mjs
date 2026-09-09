@@ -31,6 +31,35 @@ test("product suite store persists parent state and updates one child without lo
   }
 });
 
+test("product suite store marks only queued children as failed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "product-suite-store-fail-queued-"));
+  const file = join(root, "product-suites.json");
+  try {
+    const store = new ProductSuiteStore({ file });
+    store.create({
+      id: "suite-fail-queued",
+      owner: "kangyutian",
+      accountId: "account-1",
+      status: "running",
+      items: [
+        { slot: "queued-slot", status: "queued", error: "" },
+        { slot: "done-slot", status: "done", error: "" },
+        { slot: "error-slot", status: "error", error: "previous failure" },
+        { slot: "running-slot", status: "running", error: "" },
+      ],
+    });
+
+    const updated = store.failQueuedItems("suite-fail-queued", "upload failed");
+    assert.equal(updated.items.find((item) => item.slot === "queued-slot").status, "error");
+    assert.equal(updated.items.find((item) => item.slot === "queued-slot").error, "upload failed");
+    assert.equal(updated.items.find((item) => item.slot === "done-slot").status, "done");
+    assert.equal(updated.items.find((item) => item.slot === "error-slot").error, "previous failure");
+    assert.equal(updated.items.find((item) => item.slot === "running-slot").status, "running");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("product suite store removes embedded background data from legacy records", async () => {
   const root = await mkdtemp(join(tmpdir(), "product-suite-migrate-"));
   const file = join(root, "product-suites.json");
