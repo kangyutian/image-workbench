@@ -1,42 +1,208 @@
-import type { GeneratedImage, GenerateRequest } from "../types";
+import type { GeneratedImage, GenerateRequest, NanoModelId, ProviderId, Quality, Resolution, UploadedImage } from "../types";
 
-const sizeByQuality: Record<string, Record<string, string>> = {
-  standard: {
-    "1:1": "1024x1024",
-    "3:4": "1024x1536",
-    "4:3": "1536x1024",
-    "16:9": "1792x1024",
-    "9:16": "1024x1792",
-  },
-  hd: {
-    "1:1": "1536x1536",
-    "3:4": "1536x2048",
-    "4:3": "2048x1536",
-    "16:9": "2048x1152",
-    "9:16": "1152x2048",
-  },
-  "2k": {
-    "1:1": "2048x2048",
-    "3:4": "1536x2048",
-    "4:3": "2048x1536",
-    "16:9": "2048x1152",
-    "9:16": "1152x2048",
-  },
-  "4k": {
-    "1:1": "4096x4096",
-    "3:4": "3072x4096",
-    "4:3": "4096x3072",
-    "16:9": "4096x2304",
-    "9:16": "2304x4096",
-  },
+export interface NanoModelInfo {
+  id: NanoModelId;
+  label: string;
+  selectLabel: string;
+  shortLabel: string;
+  description: string;
+  useCase: string;
+  supportsQuality: boolean;
+  textEndpoint?: string;
+  editEndpoint: string;
+  prices: Record<Resolution, number>;
+  priceNote?: string;
+}
+
+export const providerLabels: Record<ProviderId, string> = {
+  nanobanana: "nanobanana",
+  image2: "image2",
+  grok: "Grok",
+  kling: "Kling",
 };
 
-const imageSizeByQuality = {
-  standard: "1K",
-  hd: "2K",
+export const qualityLabels: Record<Quality, string> = {
+  low: "草稿",
+  medium: "标准",
+  high: "精修",
+};
+
+export const resolutionLabels: Record<Resolution, string> = {
+  "1k": "1K",
   "2k": "2K",
   "4k": "4K",
-} as const;
+};
+
+export const image2Models: NanoModelInfo[] = [
+  {
+    id: "gpt-image-2.5-sunburst",
+    label: "GPT Image 2.5 Sunburst",
+    selectLabel: "GPT Image 2.5 Sunburst · 高精度商品图与复杂编辑",
+    shortLabel: "2.5 Sunburst",
+    description: "高精度、编辑一致性优先。",
+    useCase: "适合商品套图、服装广告、参考图编辑和精细商业视觉。",
+    supportsQuality: true,
+    textEndpoint: "openai/gpt-image-2.5-sunburst/text-to-image",
+    editEndpoint: "openai/gpt-image-2.5-sunburst/edit",
+    prices: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+    priceNote: "预估价，实际以 WaveSpeedAI 任务记录为准。",
+  },
+  {
+    id: "gpt-image-2",
+    label: "Image 2",
+    selectLabel: "Image 2 · 兼容旧版 Image 2 工作流",
+    shortLabel: "Image 2",
+    description: "Image 2 兼容模式。",
+    useCase: "适合需要保持原有 Image 2 结果和成本预估的任务。",
+    supportsQuality: true,
+    textEndpoint: "openai/gpt-image-2/text-to-image",
+    editEndpoint: "openai/gpt-image-2/edit",
+    prices: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+    priceNote: "预估价，实际以 WaveSpeedAI 任务记录为准。",
+  },
+];
+
+export const qualityUseCases: Record<Quality, string> = {
+  low: "快速试图、提示词探索、低成本批量。",
+  medium: "日常商用图、社媒、电商内容。",
+  high: "广告主图、海报和更精细的视觉。",
+};
+
+export const nanoModels: NanoModelInfo[] = [
+  {
+    id: "nano-banana-2-fast",
+    label: "Nano Banana 2 Fast",
+    selectLabel: "Nano Banana 2 Fast · 快速便宜版 · 批量试图、草稿、提示词测试、日常社媒图",
+    shortLabel: "2 Fast",
+    description: "最低成本、速度优先。",
+    useCase: "适合批量测试、初稿、社媒日常图。",
+    supportsQuality: false,
+    textEndpoint: "google/nano-banana-2/text-to-image-fast",
+    editEndpoint: "google/nano-banana-2/edit-fast",
+    prices: { "1k": 0.045, "2k": 0.045, "4k": 0.05 },
+  },
+  {
+    id: "nano-banana-2",
+    label: "Nano Banana 2",
+    selectLabel: "Nano Banana 2 · 标准版 · 常规商用图、人物图、产品图、需要稳定一点的结果",
+    shortLabel: "2",
+    description: "标准性价比档。",
+    useCase: "适合常规商用图、人物一致性、产品图。",
+    supportsQuality: false,
+    textEndpoint: "google/nano-banana-2/text-to-image",
+    editEndpoint: "google/nano-banana-2/edit",
+    prices: { "1k": 0.07, "2k": 0.07, "4k": 0.07 },
+    priceNote: "4K 暂按起价预估，实际以 WaveSpeedAI 任务记录为准。",
+  },
+  {
+    id: "nano-banana-pro",
+    label: "Nano Banana Pro",
+    selectLabel: "Nano Banana Pro · 高质量版 · 主视觉、广告图、复杂构图、文字布局、需要更精致的图",
+    shortLabel: "Pro",
+    description: "高质量、复杂画面优先。",
+    useCase: "适合复杂文字、构图、布局、广告海报和精修图。",
+    supportsQuality: false,
+    textEndpoint: "google/nano-banana-pro/text-to-image",
+    editEndpoint: "google/nano-banana-pro/edit",
+    prices: { "1k": 0.14, "2k": 0.14, "4k": 0.24 },
+  },
+  {
+    id: "nano-banana-pro-edit-multi",
+    label: "Nano Banana Pro Edit Multi",
+    selectLabel: "Nano Banana Pro Edit Multi · 多图编辑/多变体编辑专用 · 上传参考图后，基于参考图做多版本编辑",
+    shortLabel: "Pro Multi",
+    description: "多张编辑变体。",
+    useCase: "适合一张或多张参考图批量出多个版本，不用于纯文生图。",
+    supportsQuality: false,
+    editEndpoint: "google/nano-banana-pro/edit-multi",
+    prices: { "1k": 0.07, "2k": 0.07, "4k": 0.07 },
+    priceNote: "按起价预估，实际以 WaveSpeedAI 任务记录为准。",
+  },
+];
+
+export const grokModels: NanoModelInfo[] = [
+  {
+    id: "grok-2-image",
+    label: "Grok 2 Image",
+    selectLabel: "Grok 2 Image · 文生图 · 快速创作",
+    shortLabel: "Grok 2",
+    description: "文本直接生成图片。",
+    useCase: "适合快速概念图和日常图像创作。",
+    supportsQuality: false,
+    editEndpoint: "x-ai/grok-2-image",
+    prices: { "1k": 0.07, "2k": 0.07, "4k": 0.07 },
+  },
+  {
+    id: "grok-imagine-image-edit",
+    label: "Grok Imagine Image Edit",
+    selectLabel: "Grok Imagine Image Edit · 单图编辑",
+    shortLabel: "Grok Edit",
+    description: "根据提示词编辑一张参考图。",
+    useCase: "适合局部修改、替换背景和画面重绘。",
+    supportsQuality: false,
+    editEndpoint: "x-ai/grok-imagine-image/edit",
+    prices: { "1k": 0.025, "2k": 0.025, "4k": 0.025 },
+  },
+  {
+    id: "grok-imagine-image-quality",
+    label: "Grok Imagine Image Quality",
+    selectLabel: "Grok Imagine Image Quality · 高质量文生图",
+    shortLabel: "Grok Quality",
+    description: "带比例和清晰度控制的高质量文生图。",
+    useCase: "适合需要更稳定构图的产品图和视觉主图。",
+    supportsQuality: false,
+    editEndpoint: "x-ai/grok-imagine-image-quality/text-to-image",
+    prices: { "1k": 0.06, "2k": 0.08, "4k": 0.08 },
+  },
+];
+
+export const klingModels: NanoModelInfo[] = [
+  {
+    id: "kling-image-v3-edit",
+    label: "Kling Image V3 Edit",
+    selectLabel: "Kling Image V3 Edit · 单图图生图 · 可批量输出多张结果",
+    shortLabel: "V3 Edit",
+    description: "单图编辑与图生图",
+    useCase: "适合换背景、改产品、改服装和局部重绘。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-v3/edit",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.028 },
+  },
+  {
+    id: "kling-image-o3-edit",
+    label: "Kling Image O3 Edit",
+    selectLabel: "Kling Image O3 Edit · 多图融合 · 支持最高 4K",
+    shortLabel: "O3 Edit",
+    description: "多图参考融合与高级编辑",
+    useCase: "适合将人物、产品、风格或场景从多张参考图融合到一起。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-o3/edit",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.056 },
+  },
+  {
+    id: "kling-image-o1",
+    label: "Kling Image O1",
+    selectLabel: "Kling Image O1 · 多参考图编辑 · 保持主体一致性",
+    shortLabel: "O1",
+    description: "多模态参考图编辑",
+    useCase: "适合人物、产品、IP 和系列内容的一致性创作。",
+    supportsQuality: false,
+    editEndpoint: "kwaivgi/kling-image-o1",
+    prices: { "1k": 0.028, "2k": 0.028, "4k": 0.028 },
+  },
+];
+
+export const image2TextPrices: Record<Quality, Record<Resolution, number>> = {
+  low: { "1k": 0.01, "2k": 0.02, "4k": 0.03 },
+  medium: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+  high: { "1k": 0.22, "2k": 0.44, "4k": 0.66 },
+};
+
+export const image2EditPrices: Record<Quality, Record<Resolution, number>> = {
+  low: { "1k": 0.03, "2k": 0.06, "4k": 0.09 },
+  medium: { "1k": 0.06, "2k": 0.12, "4k": 0.18 },
+  high: { "1k": 0.22, "2k": 0.44, "4k": 0.66 },
+};
 
 function createId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -45,287 +211,174 @@ function createId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function cleanApiKey(rawKey: string) {
-  const keyMatch = rawKey.match(/sk-[A-Za-z0-9._-]+/);
-  const cleaned = (keyMatch?.[0] ?? rawKey)
-    .replace(/^Bearer\s+/i, "")
-    .replace(/[\s​-‍﻿]/g, "")
-    .trim();
-
-  if (!cleaned) return "";
-  if (!/^[!-~]+$/.test(cleaned)) {
-    throw new Error("API Key 里包含中文、全角符号或不可见字符，请只粘贴 sk- 开头的令牌本体，不要带说明文字。");
-  }
-  return cleaned;
+export function nanoModelInfo(nanoModel: NanoModelId) {
+  return [...image2Models, ...nanoModels, ...grokModels, ...klingModels].find((item) => item.id === nanoModel) ?? nanoModels[0];
 }
 
-function requestHeaders(request: GenerateRequest, json = false) {
-  const apiKey = cleanApiKey(request.apiKey);
-  const headers: Record<string, string> = {
-    "x-image-provider": request.provider,
+export function imageModelsForProvider(provider: ProviderId) {
+  if (provider === "image2") return image2Models;
+  if (provider === "grok") return grokModels;
+  if (provider === "kling") return klingModels;
+  return nanoModels;
+}
+
+export function supportsQuality(provider: ProviderId) {
+  return provider === "image2";
+}
+
+export function unitPriceFor(request: Pick<GenerateRequest, "provider" | "nanoModel" | "images" | "quality" | "resolution">) {
+  if (request.provider === "image2") {
+    const table = request.images.length > 0 ? image2EditPrices : image2TextPrices;
+    return table[request.quality][request.resolution];
+  }
+  return nanoModelInfo(request.nanoModel).prices[request.resolution];
+}
+
+export function estimateCost(request: Pick<GenerateRequest, "provider" | "nanoModel" | "images" | "quality" | "resolution" | "count">) {
+  const unit = unitPriceFor(request);
+  return {
+    unit,
+    total: unit * Math.max(1, request.count),
   };
-  if (json) headers["Content-Type"] = "application/json";
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  return headers;
 }
 
-function outputSizeFor(request: GenerateRequest) {
-  return sizeByQuality[request.quality]?.[request.aspectRatio] ?? sizeByQuality.standard["1:1"];
+export function priceNoteFor(request: Pick<GenerateRequest, "provider" | "nanoModel">) {
+  if (request.provider === "image2") return "预估价，实际以 WaveSpeedAI 任务记录为准。";
+  return nanoModelInfo(request.nanoModel).priceNote ?? "预估价，实际以 WaveSpeedAI 任务记录为准。";
 }
 
-function apiQualityFor(request: GenerateRequest) {
-  return request.quality === "standard" ? "medium" : "high";
+export function formatUsd(value: number) {
+  return `$${value.toFixed(value < 0.1 ? 3 : 2)}`;
 }
 
-function normalizeBaseUrl(baseUrl: string) {
-  return baseUrl.replace(/\/$/, "");
+interface WorkbenchImageTask {
+  id: string;
+  kind: "image";
+  status: "queued" | "running" | "done" | "error" | "cancel_requested" | "cancelled";
+  results: Array<{ url?: string }>;
+  error: string;
 }
 
-function toBrowserEndpoint(url: string) {
-  return url
-    .replace(/^https:\/\/api\.gemai\.cc\/v1beta/, "/gemai/v1beta")
-    .replace(/^https:\/\/api\.gemai\.cc\/v1/, "/gemai/v1");
+interface StagedImage {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size?: number;
+  stagedUploadId: string;
 }
 
-function dataUrlToBase64(dataUrl: string) {
-  return dataUrl.split(",")[1] ?? dataUrl;
-}
-
-function openAiEndpointFor(baseUrl: string, hasImages: boolean) {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (normalized.endsWith("/images/generations") || normalized.endsWith("/images/edits")) {
-    return toBrowserEndpoint(normalized);
+async function requestJson(path: string, init?: RequestInit) {
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    if (error instanceof TypeError && error.message.toLowerCase() === "fetch failed") {
+      throw new Error("服务器连接暂时中断，请检查网络后重试。" );
+    }
+    throw error;
   }
-  return toBrowserEndpoint(`${normalized}${hasImages ? "/images/edits" : "/images/generations"}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 413) throw new Error("上传图片太大，请压缩图片或减少参考图数量后再试。");
+    throw new Error(body?.message ?? body?.error ?? `API request failed with ${response.status} ${response.statusText}`);
+  }
+  return body;
 }
 
-function geminiEndpointFor(baseUrl: string, model: string) {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (normalized.endsWith(":generateContent")) {
-    return toBrowserEndpoint(normalized);
-  }
-  return toBrowserEndpoint(`${normalized}/models/${encodeURIComponent(model)}:generateContent`);
+async function createImageTask(request: GenerateRequest, images: Array<UploadedImage | StagedImage>) {
+  const body = await requestJson("/workbench/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...request, kind: "image", images }),
+  });
+  if (!body?.task?.id) throw new Error("图片任务创建成功，但没有返回任务 ID。");
+  return body.task as WorkbenchImageTask;
 }
 
-function parseImages(payload: unknown): GeneratedImage[] {
-  const data = payload as {
-    data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-    images?: Array<{ url?: string; b64_json?: string }>;
-    output?: Array<{ url?: string; b64_json?: string }>;
-    output_image?: { data?: string; mime_type?: string; mimeType?: string };
-    outputImage?: { data?: string; mime_type?: string; mimeType?: string };
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{
-          inlineData?: { data?: string; mimeType?: string };
-          inline_data?: { data?: string; mime_type?: string };
-        }>;
-      };
-    }>;
-  };
-  const geminiImage = data.output_image ?? data.outputImage;
-  if (geminiImage?.data) {
-    const mimeType = geminiImage.mime_type ?? geminiImage.mimeType ?? "image/png";
-    return [
-      {
-        id: createId(),
-        url: `data:${mimeType};base64,${geminiImage.data}`,
-        source: "base64",
-      },
-    ];
+async function stageImageMedia(media: UploadedImage): Promise<StagedImage> {
+  const body = await requestJson("/workbench/stage-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ media }),
+  });
+  if (!body?.media?.stagedUploadId) throw new Error("图片暂存成功，但没有返回上传凭证。");
+  return body.media as StagedImage;
+}
+
+async function waitForImageTask(id: string): Promise<GeneratedImage[]> {
+  for (let attempt = 0; attempt < 450; attempt += 1) {
+    const body = await requestJson("/workbench/tasks");
+    const task = Array.isArray(body?.tasks) ? body.tasks.find((item: { id?: unknown }) => item?.id === id) as WorkbenchImageTask | undefined : undefined;
+    if (!task) throw new Error("图片任务不存在或已无权访问。");
+    if (task.status === "done") {
+      const images = task.results
+        .map((result) => result?.url)
+        .filter((url): url is string => typeof url === "string" && url.length > 0)
+        .map((url) => ({ id: createId(), url, source: "url" as const }));
+      if (images.length > 0) return images;
+      throw new Error("WaveSpeedAI 任务完成，但没有返回图片结果。");
+    }
+    if (task.status === "error" || task.status === "cancelled") throw new Error(task.error || "图片任务生成失败。");
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
   }
-  const inlineImages =
-    data.candidates
-      ?.flatMap((candidate) => candidate.content?.parts ?? [])
-      .map((part) => part.inlineData ?? part.inline_data)
-      .filter((part): part is { data?: string; mimeType?: string; mime_type?: string } => Boolean(part?.data)) ?? [];
-  if (inlineImages.length > 0) {
-    return inlineImages.map((image) => ({
-      id: createId(),
-      url: `data:${image.mimeType ?? image.mime_type ?? "image/png"};base64,${image.data}`,
-      source: "base64",
-    }));
-  }
-  const candidates = data.data ?? data.images ?? data.output ?? [];
-  return candidates
-    .map((item, index) => {
-      if (item.url) {
-        return { id: createId(), url: item.url, source: "url" as const };
-      }
-      if (item.b64_json) {
-        return {
-          id: createId(),
-          url: `data:image/png;base64,${item.b64_json}`,
-          source: "base64" as const,
-        };
-      }
-      return {
-        id: createId(),
-        url: createMockSvg(`Result ${index + 1}`, "No image field returned"),
-        source: "mock" as const,
-      };
-    })
-    .filter(Boolean);
+  throw new Error("图片任务等待超时，请稍后刷新任务列表查看结果。");
 }
 
 export async function generateImage(request: GenerateRequest): Promise<GeneratedImage[]> {
-  const prompt = [request.prompt, request.negativePrompt ? `Negative prompt: ${request.negativePrompt}` : ""]
-    .filter(Boolean)
-    .join("\n\n");
-  const outputCount = Math.max(1, Math.min(8, request.count));
+  const normalized = { ...request, count: Math.max(1, Math.min(8, request.count)) };
+  const images: StagedImage[] = [];
+  for (const image of normalized.images) images.push(await stageImageMedia(image));
+  const task = await createImageTask(normalized, images);
+  return waitForImageTask(task.id);
+}
 
-  if (request.baseUrl.trim().toLowerCase() === "mock") {
-    await new Promise((resolve) => window.setTimeout(resolve, 700));
-    return Array.from({ length: outputCount }, (_, index) => ({
-      id: createId(),
-      url: createMockSvg(`${request.provider} ${index + 1}`, request.prompt),
-      source: "mock" as const,
-    }));
+async function pollPrediction(id: string, request: GenerateRequest): Promise<GeneratedImage[]> {
+  const query = new URLSearchParams({ provider: request.provider, nanoModel: request.nanoModel });
+  for (let attempt = 0; attempt < 420; attempt += 1) {
+    const response = await fetch(`/wavespeed/predictions/${encodeURIComponent(id)}/result?${query.toString()}`);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.message ?? `Unable to check image task (${response.status}).`);
+    const status = String(body?.data?.status || "").toLowerCase();
+    const error = body?.data?.error || body?.error;
+    const urls = outputUrls(body);
+    if (status === "completed" || status === "succeeded" || status === "success") {
+      if (urls.length > 0) return urls.map((url) => ({ id: createId(), url, source: "url" }));
+      throw new Error("WaveSpeedAI completed without an image result.");
+    }
+    if (status === "failed" || status === "error" || error) throw new Error(error || "WaveSpeedAI could not generate the image.");
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
   }
-
-  const singleImageRequest = { ...request, count: 1 };
-  const generator = request.provider === "nanobanana" ? generateGeminiImage : generateOpenAiImage;
-  const batches = await Promise.all(
-    Array.from({ length: outputCount }, () => generator(singleImageRequest, prompt)),
-  );
-  return batches.flat();
+  throw new Error("Image generation timed out. Please try again later.");
 }
 
-async function generateOpenAiImage(request: GenerateRequest, prompt: string) {
-  const hasImages = request.images.length > 0;
-  const endpoint = openAiEndpointFor(request.baseUrl, hasImages);
-  const quality = apiQualityFor(request);
-  const size = outputSizeFor(request);
-  const imageSize = imageSizeByQuality[request.quality];
-
-  const response = hasImages
-    ? await fetch(endpoint, {
-        method: "POST",
-        headers: requestHeaders(request),
-        body: openAiEditFormData(request, prompt, quality, size, imageSize),
-      })
-    : await fetch(endpoint, {
-        method: "POST",
-        headers: requestHeaders(request, true),
-        body: JSON.stringify({
-          model: request.model,
-          prompt,
-          n: request.count,
-          size,
-          quality,
-          image_size: imageSize,
-        }),
-      });
-
-  return parseImageResponse(response);
+function outputUrls(body: any): string[] {
+  const outputs = body?.data?.outputs ?? body?.data?.output ?? body?.outputs ?? [];
+  if (Array.isArray(outputs)) {
+    return outputs
+      .map((item) => (typeof item === "string" ? item : item?.url))
+      .filter((url): url is string => typeof url === "string" && url.length > 0);
+  }
+  return typeof outputs === "string" ? [outputs] : [];
 }
 
-function openAiEditFormData(
-  request: GenerateRequest,
-  prompt: string,
-  quality: string,
-  size: string,
-  imageSize: string,
-) {
-  const form = new FormData();
-  form.append("model", request.model);
-  form.append("prompt", prompt);
-  form.append("n", String(request.count));
-  form.append("size", size);
-  form.append("quality", quality);
-  form.append("image_size", imageSize);
-  request.images.forEach((image) => {
-    form.append("image", dataUrlToBlob(image.dataUrl, image.mimeType), image.fileName);
-  });
-  return form;
-}
-
-async function generateGeminiImage(request: GenerateRequest, prompt: string) {
-  const response = await fetch(geminiEndpointFor(request.baseUrl, request.model), {
+export async function importImageFromUrl(url: string): Promise<UploadedImage> {
+  const response = await fetch("/wavespeed/import-image", {
     method: "POST",
-    headers: requestHeaders(request, true),
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: addAspectHint(prompt, request.aspectRatio) },
-            ...request.images.map((image) => ({
-              inlineData: {
-                mimeType: image.mimeType,
-                data: dataUrlToBase64(image.dataUrl),
-              },
-            })),
-          ],
-        },
-      ],
-      generationConfig: {
-        responseModalities: ["TEXT", "IMAGE"],
-      },
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
   });
 
-  return parseImageResponse(response);
-}
-
-function addAspectHint(prompt: string, aspectRatio: string) {
-  if (!aspectRatio) return prompt;
-  return `${prompt}
-
-??? ${aspectRatio} ??????`;
-}
-
-async function parseImageResponse(response: Response) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errorMessage =
-      body?.error?.message ??
-      body?.message ??
-      `API request failed with ${response.status} ${response.statusText}`;
-    throw new Error(errorMessage);
+    if (response.status === 413) {
+      throw new Error("图片太大，请压缩图片或换成本地上传。");
+    }
+    throw new Error(body?.message ?? body?.error ?? "图片链接无法读取，请换成本地上传或检查链接是否可公开访问。");
   }
 
-  const images = parseImages(body);
-  if (images.length === 0) {
-    throw new Error("API responded successfully but no image URL or base64 image was found.");
+  if (!body?.image?.dataUrl) {
+    throw new Error("图片链接已读取，但没有得到可用图片。");
   }
-  return images;
-}
 
-function dataUrlToBlob(dataUrl: string, mimeType: string) {
-  const base64 = dataUrlToBase64(dataUrl);
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return new Blob([bytes], { type: mimeType });
-}
-
-function createMockSvg(title: string, prompt: string) {
-  const safeTitle = escapeXml(title);
-  const safePrompt = escapeXml(prompt.slice(0, 120));
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-      <rect width="1024" height="1024" fill="#f6f7f8"/>
-      <rect x="70" y="70" width="884" height="884" rx="36" fill="#ffffff" stroke="#d8dde3" stroke-width="3"/>
-      <circle cx="798" cy="202" r="96" fill="#56c2b7" opacity=".9"/>
-      <rect x="148" y="170" width="470" height="32" rx="16" fill="#1d2935"/>
-      <rect x="148" y="244" width="708" height="18" rx="9" fill="#8b99a8"/>
-      <rect x="148" y="284" width="610" height="18" rx="9" fill="#b4bec9"/>
-      <path d="M146 742 C260 610 338 596 450 702 C560 808 656 456 878 742 L878 860 L146 860 Z" fill="#253241"/>
-      <path d="M146 776 C300 654 390 682 498 762 C620 852 704 620 878 770 L878 860 L146 860 Z" fill="#56c2b7" opacity=".82"/>
-      <text x="148" y="414" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#1d2935">${safeTitle}</text>
-      <text x="148" y="478" font-family="Arial, sans-serif" font-size="26" fill="#5c6a78">${safePrompt}</text>
-    </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  return body.image as UploadedImage;
 }

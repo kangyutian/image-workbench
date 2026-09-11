@@ -1,0 +1,335 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  claimStagedUploadReferences,
+  cleanupStagedImageFiles,
+  cleanupStagedImages,
+  fileForStagedImage,
+  publicTask,
+  publicProductSuite,
+  purgeExpiredStagedUploads,
+  stageImagesLocally,
+  uploadImagesInParallel,
+  validateWaveSpeedImageSize,
+  validateReferenceImageCount,
+} from "./imageUploads.mjs";
+import { TaskStore } from "./taskStore.mjs";
+
+test("starts every dual-image upload before either upload finishes", async () => {
+  const started = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const pending = uploadImagesInParallel([{ id: "first" }, { id: "second" }], async (image) => {
+    started.push(image.id);
+    await gate;
+    return `${image.id}-url`;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first", "second"]);
+  release();
+  assert.deepEqual(await pending, ["first-url", "second-url"]);
+});
+
+test("limits background image uploads to two at a time", async () => {
+  const started = [];
+  const releases = new Map();
+  const pending = uploadImagesInParallel([{ id: "first" }, { id: "second" }, { id: "third" }], async (image) => {
+    started.push(image.id);
+    await new Promise((resolve) => releases.set(image.id, resolve));
+    return `${image.id}-url`;
+  }, 2);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first", "second"]);
+  releases.get("first")();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first", "second", "third"]);
+  releases.get("second")();
+  releases.get("third")();
+  assert.deepEqual(await pending, ["first-url", "second-url", "third-url"]);
+});
+
+test("rejects more than ten reference images in one task", () => {
+  assert.throws(
+    () => validateReferenceImageCount(Array.from({ length: 11 }, (_, index) => ({ id: String(index) })), 10),
+    /最多.*10/,
+  );
+  assert.equal(validateReferenceImageCount(Array.from({ length: 10 }, (_, index) => ({ id: String(index) })), 10), 10);
+});
+
+test("stages image bytes locally without retaining base64 in the task", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-stage-"));
+  try {
+    const staged = stageImagesLocally([
+      { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" },
+      { id: "second", fileName: "second.jpg", mimeType: "image/jpeg", size: 2, dataUrl: "data:image/jpeg;base64,BAU=" },
+    ], { taskId: "task-123", root, maxBytes: 1024 });
+
+    assert.equal(staged.length, 2);
+    assert.equal("dataUrl" in staged[0], false);
+    assert.equal("dataUrl" in staged[1], false);
+    assert.deepEqual(fileForStagedImage(staged[0], { root }).buffer, Buffer.from([1, 2, 3]));
+    assert.deepEqual(fileForStagedImage(staged[1], { root }).buffer, Buffer.from([4, 5]));
+    assert.deepEqual(readFileSync(join(root, "task-123", "0.png")), Buffer.from([1, 2, 3]));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps existing public image URLs without writing a staged file", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-stage-"));
+  try {
+    const staged = stageImagesLocally([
+      { id: "remote", fileName: "remote.png", mimeType: "image/png", size: 12, dataUrl: "https://media.example/remote.png" },
+    ], { taskId: "task-remote", root, maxBytes: 1024 });
+
+    assert.deepEqual(staged, [
+      { id: "remote", fileName: "remote.png", mimeType: "image/png", size: 12, dataUrl: "https://media.example/remote.png" },
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("public task responses hide local paths and inline image bytes", () => {
+  const task = publicTask({
+    id: "task-123",
+    input: {
+      prompt: "merge",
+      images: [
+        { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedPath: "task-123/0.png", dataUrl: "data:image/png;base64,AQID" },
+        { id: "remote", fileName: "remote.png", mimeType: "image/png", size: 12, dataUrl: "https://media.example/remote.png" },
+      ],
+    },
+  });
+
+  assert.deepEqual(task.input.images, [
+    { id: "first", fileName: "first.png", mimeType: "image/png", size: 3 },
+    { id: "remote", fileName: "remote.png", mimeType: "image/png", size: 12, dataUrl: "https://media.example/remote.png" },
+  ]);
+  assert.equal(JSON.stringify(task).includes("stagedPath"), false);
+  assert.equal(JSON.stringify(task).includes("base64"), false);
+});
+
+test("public task responses hide prediction and billing internals", () => {
+  const task = publicTask({
+    id: "task-private",
+    owner: "alice",
+    accountId: "account-alice",
+    predictionId: "prediction-1",
+    predictionIds: ["prediction-1", "prediction-2"],
+    billingRecords: [{ uuid: "billing-1", price: 0.12 }],
+  });
+
+  assert.equal("predictionId" in task, false);
+  assert.equal("predictionIds" in task, false);
+  assert.equal("billingRecords" in task, false);
+  assert.equal("owner" in task, false);
+  assert.equal("accountId" in task, false);
+});
+
+test("public task responses translate the raw upstream fetch failure", () => {
+  const task = publicTask({ id: "task-network-error", status: "error", error: "fetch failed" });
+  assert.equal(task.error, "WaveSpeedAI 上游网络连接暂时中断，请稍后重试。");
+});
+
+test("public product suite responses never include embedded uploads or private model analysis", () => {
+  const suite = publicProductSuite({ id: "suite-1", input: { backgroundImages: [{ dataUrl: "data:image/png;base64,AAAA" }], modelReferenceAnalysis: { face: "private" } }, sourceImages: [{ stagedPath: "suite-1/0.png" }], productReferenceUrls: ["https://private.example/product.png"], modelReferenceImage: { stagedPath: "suite-1/2.png" }, modelReferenceAnalysis: { face: "private" }, modelReferenceAnalysisUsage: { total_tokens: 12 }, items: [] });
+  assert.equal("backgroundImages" in (suite.input || {}), false);
+  assert.equal("sourceImages" in suite, false);
+  assert.equal("productReferenceUrls" in suite, false);
+  assert.equal("modelReferenceAnalysis" in (suite.input || {}), false);
+  assert.equal("modelReferenceImage" in suite, false);
+  assert.equal("modelReferenceAnalysis" in suite, false);
+  assert.equal("modelReferenceAnalysisUsage" in suite, false);
+  assert.doesNotMatch(JSON.stringify(suite), /data:image/);
+});
+
+test("WaveSpeed image uploads reject files at the provider's 10MB limit", () => {
+  assert.throws(() => validateWaveSpeedImageSize(10 * 1024 * 1024), /10MB/);
+  assert.equal(validateWaveSpeedImageSize(10 * 1024 * 1024 - 1), 10 * 1024 * 1024 - 1);
+});
+
+test("cleanup removes only the selected task staging directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-stage-"));
+  try {
+    const staged = stageImagesLocally([
+      { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" },
+    ], { taskId: "task-clean", root, maxBytes: 1024 });
+    stageImagesLocally([
+      { id: "other", fileName: "other.png", mimeType: "image/png", size: 2, dataUrl: "data:image/png;base64,BAU=" },
+    ], { taskId: "task-keep", root, maxBytes: 1024 });
+
+    cleanupStagedImages("task-clean", { root });
+    assert.throws(() => fileForStagedImage(staged[0], { root }));
+    assert.deepEqual(readFileSync(join(root, "task-keep", "0.png")), Buffer.from([4, 5]));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("claims owner-matched staged uploads once and returns internal file metadata", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-claim-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    store.create({
+      id: "upload-one",
+      owner: "alice",
+      accountId: "account-alice",
+      image: { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedPath: "upload-one/0.png" },
+      claimedBy: null,
+    });
+
+    assert.deepEqual(claimStagedUploadReferences([
+      { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedUploadId: "upload-one" },
+    ], { owner: "alice", accountId: "account-alice", taskId: "task-one", store }), [
+      { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, stagedPath: "upload-one/0.png" },
+    ]);
+    assert.equal(store.get("upload-one").claimedBy, "task-one");
+    assert.throws(
+      () => claimStagedUploadReferences([{ stagedUploadId: "upload-one" }], { owner: "alice", accountId: "account-alice", taskId: "task-two", store }),
+      /不可用|使用/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("claims an MCP-ready image record stored without the legacy image wrapper", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-mcp-claim-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    store.create({
+      id: "mcp-upload-one",
+      owner: "codex-mcp",
+      accountId: "service:codex-mcp",
+      mediaKind: "image",
+      fileName: "input.png",
+      mimeType: "image/png",
+      size: 3,
+      stagedPath: "mcp-upload-one/input.png",
+      status: "ready",
+      claimedBy: null,
+    });
+
+    assert.deepEqual(claimStagedUploadReferences([{ stagedUploadId: "mcp-upload-one" }], {
+      owner: "codex-mcp",
+      accountId: "service:codex-mcp",
+      taskId: "task-mcp",
+      store,
+    }), [{ stagedPath: "mcp-upload-one/input.png", stagedUploadId: "mcp-upload-one", fileName: "input.png", mimeType: "image/png", size: 3 }]);
+    assert.equal(store.get("mcp-upload-one").claimedBy, "task-mcp");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects legacy or same-name account staged uploads after account migration", () => {
+  const root = mkdtempSync(join(tmpdir(), "workbench-identity-staged-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    store.create({
+      id: "legacy-upload",
+      owner: "same-name",
+      image: { id: "legacy", fileName: "legacy.png", mimeType: "image/png", size: 3, stagedPath: "legacy-upload/0.png" },
+      claimedBy: null,
+    });
+    store.create({
+      id: "old-account-upload",
+      owner: "same-name",
+      accountId: "account-old",
+      image: { id: "old", fileName: "old.png", mimeType: "image/png", size: 3, stagedPath: "old-account-upload/0.png" },
+      claimedBy: null,
+    });
+
+    assert.throws(
+      () => claimStagedUploadReferences([{ stagedUploadId: "legacy-upload" }], { owner: "same-name", accountId: "account-new", taskId: "task-new", store }),
+    );
+    assert.throws(
+      () => claimStagedUploadReferences([{ stagedUploadId: "old-account-upload" }], { owner: "same-name", accountId: "account-new", taskId: "task-new", store }),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cleans every unique upload directory referenced by a completed task", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-clean-inputs-"));
+  try {
+    stageImagesLocally([
+      { id: "first", fileName: "first.png", mimeType: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" },
+    ], { taskId: "upload-one", root, maxBytes: 1024 });
+    stageImagesLocally([
+      { id: "second", fileName: "second.png", mimeType: "image/png", size: 2, dataUrl: "data:image/png;base64,BAU=" },
+    ], { taskId: "upload-two", root, maxBytes: 1024 });
+
+    cleanupStagedImageFiles([
+      { stagedPath: "upload-one/0.png" },
+      { stagedPath: "upload-two/0.png" },
+      { stagedPath: "upload-one/0.png" },
+    ], { root });
+    assert.throws(() => readFileSync(join(root, "upload-one", "0.png")));
+    assert.throws(() => readFileSync(join(root, "upload-two", "0.png")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cleans one staged file without deleting sibling media from the same task", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-clean-one-file-"));
+  try {
+    stageImagesLocally([
+      { id: "product", fileName: "product.png", mimeType: "image/png", size: 3, dataUrl: "data:image/png;base64,AQID" },
+      { id: "background", fileName: "background.png", mimeType: "image/png", size: 2, dataUrl: "data:image/png;base64,BAU=" },
+    ], { taskId: "suite-one", root, maxBytes: 1024 });
+
+    cleanupStagedImageFiles([{ stagedPath: "suite-one/0.png" }], { root });
+    assert.throws(() => readFileSync(join(root, "suite-one", "0.png")));
+    assert.deepEqual(fileForStagedImage({ stagedPath: "suite-one/1.png", fileName: "background.png", mimeType: "image/png" }, { root }), {
+      buffer: Buffer.from([4, 5]),
+      fileName: "background.png",
+      mimeType: "image/png",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("purges abandoned uploads while retaining the retry window for claimed files", () => {
+  const root = mkdtempSync(join(tmpdir(), "image-workbench-purge-"));
+  try {
+    const store = new TaskStore({ file: join(root, "uploads.json") });
+    const imagesRoot = join(root, "images");
+    const dataUrl = "data:image/png;base64,AQID";
+    for (const id of ["old-unclaimed", "recent-claimed", "old-claimed", "consumed"]) {
+      const image = stageImagesLocally([{ id, fileName: `${id}.png`, mimeType: "image/png", dataUrl }], { taskId: id, root: imagesRoot, maxBytes: 1024 })[0];
+      store.create({
+        id,
+        owner: "alice",
+        image,
+        claimedBy: id.includes("claimed") ? "task-1" : null,
+        consumedAt: id === "consumed" ? "2026-01-10T00:00:00.000Z" : null,
+        createdAt: id === "recent-claimed" ? "2026-01-09T00:00:00.000Z" : "2026-01-01T00:00:00.000Z",
+      });
+    }
+
+    const removed = purgeExpiredStagedUploads({
+      store,
+      root: imagesRoot,
+      now: new Date("2026-01-10T12:00:00.000Z"),
+      unclaimedTtlMs: 24 * 60 * 60 * 1000,
+      claimedTtlMs: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    assert.deepEqual(removed.sort(), ["consumed", "old-claimed", "old-unclaimed"]);
+    assert.equal(store.get("recent-claimed")?.claimedBy, "task-1");
+    assert.deepEqual(readFileSync(join(imagesRoot, "recent-claimed", "0.png")), Buffer.from([1, 2, 3]));
+    assert.throws(() => readFileSync(join(imagesRoot, "old-unclaimed", "0.png")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,263 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { UsageLedger } from "./usageLedger.mjs";
+import { UsageSynchronizer } from "./usageSynchronizer.mjs";
+
+test("syncs fake billing records by credential group and coalesces scheduled retries", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-sync-"));
+  try {
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({
+      id: "task-1",
+      owner: "alice",
+      kind: "video",
+      createdAt: "2026-08-10T00:01:00.000Z",
+      status: "done",
+      input: { modelId: "seedance-2-fast-image-to-video" },
+      results: [{ url: "https://cdn.example/video.mp4" }],
+      predictionIds: ["prediction-1"],
+    });
+    const scheduled = [];
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE_KEY_NAME",
+      apiKeyForEnvKey: () => "fake-billing-key",
+      fetchImpl: async (_url, options) => {
+        assert.equal(options.headers.Authorization, "Bearer fake-billing-key");
+        return new Response(JSON.stringify({ data: { page: 1, total: 1, items: [{ uuid: "billing-1", billing_type: "deduct", price: 0.25, created_at: "2026-08-10T00:02:00.000Z", prediction: { uuid: "prediction-1" } }] } }), { status: 200 });
+      },
+      now: () => new Date("2026-08-10T00:03:00.000Z"),
+      setTimeoutImpl: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; },
+      clearTimeoutImpl: () => undefined,
+    });
+
+    synchronizer.enqueue();
+    synchronizer.enqueue();
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000]);
+    await synchronizer.sync();
+    assert.equal(ledger.get("task-1").amountUsd, 0.25);
+    assert.equal(ledger.get("task-1").billingSync.status, "complete");
+    assert.equal(synchronizer.status().running, false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("marks a missing billing response pending with a bounded next retry", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-retry-"));
+  try {
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-2", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "error", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-2"] });
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE_KEY_NAME",
+      apiKeyForEnvKey: () => "fake-billing-key",
+      fetchImpl: async () => new Response(JSON.stringify({ data: { page: 1, total: 0, items: [] } }), { status: 200 }),
+      now: () => new Date("2026-08-10T00:03:00.000Z"),
+      setTimeoutImpl: () => 1,
+      clearTimeoutImpl: () => undefined,
+    });
+
+    await synchronizer.sync();
+    const sync = ledger.get("task-2").billingSync;
+    assert.equal(sync.status, "pending");
+    assert.equal(sync.attempts, 1);
+    assert.equal(sync.nextAttemptAt, "2026-08-10T00:04:00.000Z");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("uses the persisted future retry time when scheduling background work", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-delay-"));
+  try {
+    const now = new Date("2026-08-10T00:03:00.000Z");
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-3", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "error", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-3"] });
+    ledger.updateBillingSync("task-3", { status: "pending", attempts: 2, nextAttemptAt: "2026-08-10T00:04:00.000Z" });
+    const synchronizer = new UsageSynchronizer({ ledger, keyForEntry: () => "FAKE", apiKeyForEnvKey: () => "fake", now: () => now, setTimeoutImpl: () => 1, clearTimeoutImpl: () => undefined });
+    assert.equal(synchronizer.nextDelay(), 60_000);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("schedules the next retry after the current promise has been cleared", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-promise-schedule-"));
+  try {
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-schedule", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "error", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-schedule"] });
+    const scheduled = [];
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => new Response(JSON.stringify({ data: { page: 1, total: 0, items: [] } }), { status: 200 }),
+      now: () => new Date("2026-08-10T00:03:00.000Z"),
+      setTimeoutImpl: (callback, delay) => { scheduled.push({ callback, delay }); return { unref() {} }; },
+      clearTimeoutImpl: () => undefined,
+    });
+
+    await synchronizer.sync();
+    assert.deepEqual(scheduled.map((item) => item.delay), [60_000]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("uses every approved retry delay and settles successful no-charge searches only at the end", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-delay-sequence-"));
+  try {
+    let nowMs = Date.parse("2026-08-10T00:03:00.000Z");
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-delay-sequence", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "error", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-delay-sequence"] });
+    const scheduled = [];
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => new Response(JSON.stringify({ data: { page: 1, total: 0, items: [] } }), { status: 200 }),
+      now: () => new Date(nowMs),
+      setTimeoutImpl: (callback, delay) => { scheduled.push({ callback, delay }); return { unref() {} }; },
+      clearTimeoutImpl: () => undefined,
+    });
+
+    const expectedDelays = [60_000, 300_000, 1_800_000, 7_200_000, 86_400_000];
+    for (const expectedDelay of expectedDelays) {
+      await synchronizer.sync();
+      assert.equal(scheduled[scheduled.length - 1].delay, expectedDelay);
+      nowMs = Date.parse(ledger.get("task-delay-sequence").billingSync.nextAttemptAt);
+    }
+
+    await synchronizer.sync();
+    assert.equal(ledger.get("task-delay-sequence").billingSync.status, "unresolved");
+    assert.equal(ledger.get("task-delay-sequence").billingSync.nextAttemptAt, null);
+    assert.equal(ledger.pendingCount(), 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("settles each prediction independently and accumulates billing that arrives in batches", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-predictions-"));
+  try {
+    let callCount = 0;
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-batched", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "done", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [{ url: "https://cdn.example/one.png" }, { url: "https://cdn.example/two.png" }], predictionIds: ["prediction-one", "prediction-two"] });
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => {
+        callCount += 1;
+        const predictionId = callCount === 1 ? "prediction-one" : "prediction-two";
+        const price = callCount === 1 ? 0.12 : 0.23;
+        return new Response(JSON.stringify({ data: { page: 1, total: 1, items: [{ uuid: `billing-${callCount}`, billing_type: "deduct", price, created_at: "2026-08-10T00:02:00.000Z", prediction: { uuid: predictionId } }] } }), { status: 200 });
+      },
+      now: () => new Date("2026-08-10T00:03:00.000Z"),
+      setTimeoutImpl: () => ({ unref() {} }),
+      clearTimeoutImpl: () => undefined,
+    });
+
+    await synchronizer.sync({ force: true });
+    const first = ledger.get("task-batched");
+    assert.equal(first.amountUsd, 0.12);
+    assert.equal(first.billingSync.status, "pending");
+    assert.equal(first.predictionSettlements["prediction-one"].status, "charged");
+    assert.equal(first.predictionSettlements["prediction-two"].status, "pending");
+
+    await synchronizer.sync({ force: true });
+    const second = ledger.get("task-batched");
+    assert.equal(second.amountUsd, 0.35);
+    assert.equal(second.billingSync.status, "complete");
+    assert.equal(second.predictionSettlements["prediction-two"].status, "charged");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps API and credential failures unresolved for a later manual sync", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-failure-"));
+  try {
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-failure", owner: "alice", kind: "video", createdAt: "2026-08-10T00:01:00.000Z", status: "done", input: { modelId: "seedance", provider: "wavespeed" }, results: [{ url: "https://cdn.example/video.mp4" }], predictionIds: ["prediction-failure"] });
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => new Response(JSON.stringify({ error: "temporary outage" }), { status: 503 }),
+      now: () => new Date("2026-08-10T00:03:00.000Z"),
+      setTimeoutImpl: () => ({ unref() {} }),
+      clearTimeoutImpl: () => undefined,
+    });
+
+    for (let attempt = 0; attempt < 7; attempt += 1) await synchronizer.sync({ force: true });
+    const entry = ledger.get("task-failure");
+    assert.equal(entry.billingSync.status, "failed");
+    assert.equal(entry.billingSync.error, "WaveSpeed billing sync is temporarily unavailable.");
+    assert.equal(entry.billingSync.nextAttemptAt, null);
+    assert.equal(ledger.pendingCount(), 1);
+    assert.equal(entry.amountUsd, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("uses the initial 15-second enqueue only once, then stops automatic retries after the six-query schedule", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-bounded-retry-"));
+  try {
+    let nowMs = Date.parse("2026-08-10T00:03:00.000Z");
+    let fetchCalls = 0;
+    const ledger = new UsageLedger({ file: join(directory, "usage.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask({ id: "task-bounded", owner: "alice", kind: "image", createdAt: "2026-08-10T00:01:00.000Z", status: "done", input: { nanoModel: "grok-2-image", provider: "grok" }, results: [], predictionIds: ["prediction-bounded"] });
+    const scheduled = [];
+    const synchronizer = new UsageSynchronizer({
+      ledger,
+      keyForEntry: () => "FAKE",
+      apiKeyForEnvKey: () => "fake",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ data: { page: 1, total: 0, items: [] } }), { status: 200 });
+      },
+      now: () => new Date(nowMs),
+      setTimeoutImpl: (callback, delay) => { scheduled.push({ callback, delay }); return { unref() {} }; },
+      clearTimeoutImpl: () => undefined,
+    });
+
+    synchronizer.enqueue();
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000]);
+
+    await synchronizer.sync();
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000, 60_000]);
+    nowMs = Date.parse(ledger.get("task-bounded").billingSync.nextAttemptAt);
+
+    for (const expectedDelay of [300_000, 1_800_000, 7_200_000, 86_400_000]) {
+      await synchronizer.sync();
+      assert.equal(scheduled[scheduled.length - 1].delay, expectedDelay);
+      const nextAttemptAt = ledger.get("task-bounded").billingSync.nextAttemptAt;
+      if (nextAttemptAt) nowMs = Date.parse(nextAttemptAt);
+    }
+
+    await synchronizer.sync();
+    const exhausted = ledger.get("task-bounded");
+    assert.equal(fetchCalls, 6);
+    assert.equal(exhausted.billingSync.attempts, 6);
+    assert.equal(exhausted.billingSync.status, "unresolved");
+    assert.equal(exhausted.billingSync.nextAttemptAt, null);
+    assert.deepEqual(scheduled.map((item) => item.delay), [15_000, 60_000, 300_000, 1_800_000, 7_200_000, 86_400_000]);
+
+    synchronizer.enqueue();
+    assert.equal(scheduled.length, 6);
+    await synchronizer.sync();
+    assert.equal(fetchCalls, 6);
+    await synchronizer.sync({ force: true });
+    assert.equal(fetchCalls, 7);
+    assert.equal(ledger.get("task-bounded").billingSync.status, "unresolved");
+    assert.equal(scheduled.length, 6);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
