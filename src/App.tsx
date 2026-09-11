@@ -19,6 +19,7 @@ import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploa
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
 import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
 import { prepareProductSuiteImage } from "./lib/productSuiteImageCompression";
+import { VideoRemixWorkspace } from "./VideoRemixWorkspace";
 import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteModelAppearance, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
@@ -399,7 +400,7 @@ function App() {
   const [resolution, setResolution] = useState<Resolution>("2k");
   const [quality, setQuality] = useState<Quality>("medium");
   const [tasks, setTasks] = useState<ImageTask[]>([]);
-  const [creationKind, setCreationKind] = useState<"image" | "video" | "cutout" | "print" | "suite">("image");
+  const [creationKind, setCreationKind] = useState<"image" | "video" | "cutout" | "print" | "suite" | "remix">("image");
   const [cutoutTasks, setCutoutTasks] = useState<CutoutTask[]>([]);
   const [cutoutImage, setCutoutImage] = useState<UploadedImage | null>(null);
   const [cutoutPrompt, setCutoutPrompt] = useState("main product");
@@ -1193,7 +1194,7 @@ function App() {
     ? tasks.filter((task) => task.preset === "print-extraction")
     : tasks.filter((task) => task.preset !== "print-extraction");
 
-  const creationTitle = creationKind === "image" ? "图片创作" : creationKind === "video" ? "视频创作" : creationKind === "print" ? "印花提取" : creationKind === "suite" ? "商品套图" : "产品抠图";
+  const creationTitle = creationKind === "image" ? "图片创作" : creationKind === "video" ? "视频创作" : creationKind === "print" ? "印花提取" : creationKind === "suite" ? "商品套图" : creationKind === "remix" ? "视频再生" : "产品抠图";
 
   return (
     <main className={`app-shell creation-${creationKind}`}>
@@ -1205,17 +1206,18 @@ function App() {
           <button className={creationKind === "cutout" ? "active" : ""} aria-pressed={creationKind === "cutout"} onClick={() => setCreationKind("cutout")} type="button">产品抠图</button>
           <button className={creationKind === "print" ? "active" : ""} aria-pressed={creationKind === "print"} onClick={() => setCreationKind("print")} type="button">印花提取</button>
           <button className={creationKind === "suite" ? "active" : ""} aria-pressed={creationKind === "suite"} onClick={() => setCreationKind("suite")} type="button">商品套图</button>
+          <button className={creationKind === "remix" ? "active" : ""} aria-pressed={creationKind === "remix"} onClick={() => setCreationKind("remix")} type="button">视频再生</button>
         </nav>
         <div className="workbench-top-actions"><span>使用指南</span><span className="balance-badge">余额&nbsp; 1,250</span><span className="account-orb">W</span></div>
       </header>
       <div className={`workbench-layout ${creationKind === "image" ? "image-workbench-layout" : ""}`}>
         <div className="workbench-main">
-          <header className="topbar page-heading">
+          {creationKind !== "remix" && <header className="topbar page-heading">
             <div><p className="eyebrow">AI Workbench</p><h1>{creationTitle}</h1><span className="page-subtitle">多任务并行创作，结果统一管理</span></div>
             <div className="status-strip"><span>{tasks.length + videoTasks.length + cutoutTasks.length}/{MAX_TASKS} 个任务</span><span>{resultCount} 张结果图</span><span>运行中 {activeImageCount + activeVideoCount}</span></div>
-          </header>
+          </header>}
 
-      {creationKind === "image" ? <section className="image-batch-desk">
+      {creationKind === "remix" ? <VideoRemixWorkspace /> : creationKind === "image" ? <section className="image-batch-desk">
         <div className="batch-heading">
           <div>
             <p className="eyebrow">Batch</p>

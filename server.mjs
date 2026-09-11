@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { extname, join, normalize, resolve } from "node:path";
+import ffmpegPath from "ffmpeg-static";
+import ffprobePackage from "ffprobe-static";
 import { recoveryAction, TaskScheduler } from "./server/taskScheduler.mjs";
 import { accountIdForUsername, ensureAccountIds, migrateTaskAccountId, resolveSessionUser } from "./server/accountIdentity.mjs";
 import {
@@ -43,6 +45,12 @@ import { createMcpOperations } from "./server/mcpOperations.mjs";
 import { McpIdempotencyStore } from "./server/mcpIdempotency.mjs";
 import { MCP_MAX_IMAGE_BYTES, McpUploadStore, claimUpload, createUploadTicket, markUploadReady, mediaFromUpload, publicUpload, purgeExpiredMcpUploads, uploadTokenMatches, writeUploadBody } from "./server/mcpUploads.mjs";
 import { issueDownloadToken, verifyDownloadToken } from "./server/mcpDownloads.mjs";
+import { VideoRemixStore } from "./server/videoRemixStore.mjs";
+import { analyzeVideoFrames } from "./server/openaiVideoAnalysis.mjs";
+import { extractAnalysisFrames, frameDataUrl, probeVideo } from "./server/videoProbe.mjs";
+import { mediaAbsolutePath, receiveVideoUpload, removeVideoRemixDirectory, resolveProjectMediaPath } from "./server/videoRemixUploads.mjs";
+import { VIDEO_REMIX_ASPECT_RATIOS, VIDEO_REMIX_IMAGE_MODELS, VIDEO_REMIX_LIMITS, VIDEO_REMIX_VIDEO_MODELS, invalidateShotAfterPromptEdit, normalizeVideoRemixSettings, publicVideoRemixProject, recomputeVideoRemixStatus, validateVideoRemixDraft } from "./shared/videoRemixModels.mjs";
+import { allStoryboardShotsApproved, imageRequestForShot, remixTaskMetadata, syncRemixTaskResult, videoRequestForShot } from "./server/videoRemixOrchestrator.mjs";
 
 const port = Number(process.env.PORT || 5173);
 const root = resolve("dist");
@@ -56,8 +64,10 @@ const mcpUploadsFile = resolve("data", "mcp-uploads.json");
 const mcpIdempotencyFile = resolve("data", "mcp-idempotency.json");
 const usageLedgerFile = resolve("data", "usage-ledger.json");
 const productSuitesFile = resolve("data", "product-suites.json");
+const videoRemixesFile = resolve("data", "video-remixes.json");
 const stagedImagesRoot = resolve("data", "staged-images");
 const mcpUploadsRoot = resolve("data", "mcp-uploads");
+const videoRemixMediaRoot = resolve("data", "video-remix-media");
 const maxReferenceImages = 10;
 const stagedUploadCleanupIntervalMs = 60 * 60 * 1000;
 const sessionMaxAgeSeconds = 7 * 24 * 60 * 60;
@@ -67,6 +77,7 @@ loadLocalEnv();
 const mcpConfig = mcpConfigFromEnv();
 const taskStore = new TaskStore({ file: tasksFile });
 const productSuiteStore = new ProductSuiteStore({ file: productSuitesFile });
+const videoRemixStore = new VideoRemixStore({ file: videoRemixesFile });
 const stagedUploadStore = new TaskStore({ file: stagedUploadsFile });
 const mcpUploadStore = new McpUploadStore({ file: mcpUploadsFile });
 const mcpIdempotencyStore = new McpIdempotencyStore({ file: mcpIdempotencyFile });
@@ -735,6 +746,124 @@ function taskId() {
   return `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
 }
 
+function videoRemixOwnerMatches(project, owner) {
+  return Boolean(project && (project.accountId ? project.accountId === owner.accountId : project.owner === owner.username));
+}
+
+function videoRemixMediaUrl(projectId, mediaId) {
+  return `/workbench/video-remixes/${encodeURIComponent(projectId)}/media/${encodeURIComponent(mediaId)}`;
+}
+
+function publicVideoRemixResult(project) {
+  const result = publicVideoRemixProject(project);
+  if (result.sourceVideo?.mediaId) result.sourceVideo.previewUrl = videoRemixMediaUrl(project.id, result.sourceVideo.mediaId);
+  if (Array.isArray(result.frames)) result.frames = result.frames.map((frame) => ({ ...frame, previewUrl: videoRemixMediaUrl(project.id, frame.mediaId) }));
+  if (Array.isArray(result.productImages)) result.productImages = result.productImages.map((image) => ({ ...image, previewUrl: videoRemixMediaUrl(project.id, image.mediaId) }));
+  if (Array.isArray(result.shots)) result.shots = result.shots.map((shot) => shot.sourceFrame?.mediaId
+    ? { ...shot, sourceFrame: { ...shot.sourceFrame, previewUrl: videoRemixMediaUrl(project.id, shot.sourceFrame.mediaId) } }
+    : shot);
+  return result;
+}
+
+function videoRemixMediaDataUrl(project, media) {
+  const absolutePath = mediaAbsolutePath(project.id, media.stagedPath, { root: videoRemixMediaRoot });
+  const buffer = readFileSync(absolutePath);
+  return `data:${media.mimeType || "image/jpeg"};base64,${buffer.toString("base64")}`;
+}
+
+function mediaExtension(mimeType, fileName = "") {
+  const known = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov" };
+  return known[mimeType] || extname(fileName) || ".bin";
+}
+
+function sourceFrameForShot(frames, shot) {
+  const target = (Number(shot.startSeconds) + Number(shot.endSeconds)) / 2;
+  return frames.reduce((closest, frame) => Math.abs(frame.timestampSeconds - target) < Math.abs(closest.timestampSeconds - target) ? frame : closest, frames[0]);
+}
+
+async function analyzeVideoRemixProject(projectId) {
+  const project = videoRemixStore.get(projectId);
+  if (!project?.sourceVideo) throw new Error("请先上传源视频。");
+  videoRemixStore.patch(projectId, { status: "analyzing", error: "", analysisError: "" });
+  try {
+    const sourcePath = mediaAbsolutePath(project.id, project.sourceVideo.stagedPath, { root: videoRemixMediaRoot });
+    const outputDir = mediaAbsolutePath(project.id, "frames", { root: videoRemixMediaRoot });
+    const extracted = await extractAnalysisFrames(sourcePath, { outputDir, durationSeconds: project.sourceVideo.durationSeconds, maxFrames: 12, ffmpegPath });
+    const frames = extracted.map((frame) => ({
+      mediaId: frame.fileName.replace(/\.jpg$/i, ""),
+      fileName: frame.fileName,
+      mimeType: frame.mimeType,
+      size: statSync(frame.absolutePath).size,
+      stagedPath: `frames/${frame.fileName}`,
+      timestampSeconds: frame.timestampSeconds,
+    }));
+    videoRemixStore.patch(projectId, { frames });
+    const analysis = await analyzeVideoFrames({
+      frames: await Promise.all(extracted.map(async (frame) => ({ timestampSeconds: frame.timestampSeconds, dataUrl: await frameDataUrl(frame.absolutePath) }))),
+      durationSeconds: project.sourceVideo.durationSeconds,
+      aspectRatio: project.aspectRatio,
+    });
+    const shots = analysis.shots.map((shot) => ({ ...shot, sourceFrame: sourceFrameForShot(frames, shot) }));
+    const updated = videoRemixStore.patch(projectId, { title: analysis.title, overallScript: analysis.overallScript, shots, status: "script_review", analysisCompletedAt: new Date().toISOString(), error: "", analysisError: "" });
+    return updated;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "视频分析失败，请重试。";
+    videoRemixStore.patch(projectId, { status: "error", error: message, analysisError: message });
+    throw error;
+  }
+}
+
+function createVideoRemixProject(input, owner) {
+  const ownerInfo = ownerIdentity(owner);
+  if (!VIDEO_REMIX_ASPECT_RATIOS.includes(input?.aspectRatio)) throw Object.assign(new Error("请选择视频输出画面比例。"), { statusCode: 400 });
+  const settings = normalizeVideoRemixSettings(input);
+  const id = taskId();
+  return videoRemixStore.create({
+    id,
+    owner: ownerInfo.username,
+    accountId: ownerInfo.accountId,
+    title: String(input?.title || "视频再生项目").trim().slice(0, 160),
+    ...settings,
+    status: "draft",
+    sourceVideo: null,
+    frames: [],
+    productImages: [],
+    overallScript: "",
+    shots: [],
+    scriptConfirmedAt: null,
+    analysisCompletedAt: null,
+    error: "",
+  });
+}
+
+async function queueVideoRemixStoryboardShot(project, shot, owner) {
+  const references = [shot.sourceFrame, ...(project.productImages || [])].filter(Boolean).map((media) => ({
+    id: media.mediaId,
+    fileName: media.fileName,
+    mimeType: media.mimeType,
+    dataUrl: videoRemixMediaDataUrl(project, media),
+  }));
+  const request = imageRequestForShot(project, shot, references);
+  const task = await createWorkbenchTask({ ...request, ...remixTaskMetadata(project.id, shot.id, "storyboard") }, owner);
+  videoRemixStore.patchShot(project.id, shot.id, { imageStatus: "queued", imageTaskId: task.id, imageResultUrl: "", imageError: "", imageApprovedAt: null, videoStatus: "idle", videoTaskId: "", videoResultUrl: "", videoError: "" });
+  taskScheduler.enqueue(task);
+  return task;
+}
+
+async function queueVideoRemixVideoShot(project, shot, owner) {
+  const request = videoRequestForShot(project, shot);
+  const task = await createWorkbenchTask({ ...request, ...remixTaskMetadata(project.id, shot.id, "video") }, owner);
+  videoRemixStore.patchShot(project.id, shot.id, { videoStatus: "queued", videoTaskId: task.id, videoResultUrl: "", videoError: "" });
+  taskScheduler.enqueue(task);
+  return task;
+}
+
+function syncVideoRemixChildTask(taskId) {
+  const task = taskStore.get(taskId);
+  if (!task || !task.remixProjectId || !["done", "error"].includes(task.status)) return;
+  syncRemixTaskResult({ projectStore: videoRemixStore, task });
+}
+
 function suiteTaskId(suiteId) {
   return `suite-${suiteId}`;
 }
@@ -1090,6 +1219,7 @@ function recordUsageTask(task, queueBilling = false) {
 function patchTaskAndUsage(id, changes, queueBilling = false) {
   const task = taskStore.patch(id, changes);
   recordUsageTask(task, queueBilling);
+  if (task && ["done", "error"].includes(task.status)) syncVideoRemixChildTask(id);
   return task;
 }
 
@@ -1372,6 +1502,7 @@ async function executeWorkbenchTask(queuedTask) {
     patchTaskAndUsage(task.id, { status: "done", results: mergeResultUrls(task.results, [...urls, ...resolved]).map((url) => ({ url })), error: "" }, true);
   } catch (error) {
     taskStore.patch(task.id, { status: "error", error: error instanceof Error ? error.message : "任务执行失败，请稍后重试。" });
+    syncVideoRemixChildTask(task.id);
   }
   recordUsageTask(taskStore.get(task.id), true);
 }
@@ -1411,6 +1542,257 @@ async function handleStageImage(req, res, owner) {
     cleanupStagedImages(uploadId, { root: stagedImagesRoot });
     sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "图片暂存失败。" });
   }
+}
+
+function videoRemixProjectOrNotFound(id, owner) {
+  const project = videoRemixStore.get(id);
+  if (!project || !videoRemixOwnerMatches(project, owner)) return null;
+  return project;
+}
+
+function decodeHeaderFileName(value, fallback) {
+  try {
+    return decodeURIComponent(String(value || fallback)).replace(/[\\/]/g, "-").slice(0, 160) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function handleVideoRemixCreate(req, res, owner) {
+  try {
+    const body = await readJsonBody(req);
+    const project = createVideoRemixProject(body, owner);
+    sendJson(res, 201, { project: publicVideoRemixResult(project) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "无法创建视频再生项目。" });
+  }
+}
+
+function handleVideoRemixList(res, owner) {
+  sendJson(res, 200, { projects: videoRemixStore.forOwner(owner).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicVideoRemixResult) });
+}
+
+function handleVideoRemixGet(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/?]+)$/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  sendJson(res, 200, { project: publicVideoRemixResult(project) });
+}
+
+async function handleVideoRemixSourceUpload(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/source-video/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  if (project.sourceVideo) return sendJson(res, 409, { message: "该项目已经上传源视频，如需更换请重新创建项目。" });
+  let media;
+  try {
+    const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+    media = await receiveVideoUpload(req, {
+      root: videoRemixMediaRoot,
+      projectId: id,
+      fileName: decodeHeaderFileName(req.headers["x-file-name"], "source-video.mp4"),
+      mimeType: contentType,
+      size: Number(req.headers["content-length"] || 0) || undefined,
+    });
+    const absolutePath = mediaAbsolutePath(id, media.stagedPath, { root: videoRemixMediaRoot });
+    const metadata = await probeVideo(absolutePath, { ffprobePath: ffprobePackage.path });
+    const sourceVideo = { ...media, mediaId: "source-video", ...metadata };
+    const updated = videoRemixStore.patch(id, { sourceVideo, status: "uploaded", error: "" });
+    sendJson(res, 201, { project: publicVideoRemixResult(updated) });
+  } catch (error) {
+    if (media?.stagedPath) {
+      try { unlinkSync(mediaAbsolutePath(id, media.stagedPath, { root: videoRemixMediaRoot })); } catch { /* best effort cleanup */ }
+    }
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "视频上传失败。" });
+  }
+}
+
+async function handleVideoRemixProductImage(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/product-images/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  const uploadId = taskId();
+  try {
+    const body = await readJsonBody(req);
+    const stagedUploadId = String(body?.stagedUploadId || "");
+    const record = stagedUploadId ? stagedUploadStore.get(stagedUploadId) : null;
+    if (!record || record.owner !== owner.username || record.accountId !== owner.accountId || record.claimedBy || !record.image?.stagedPath) throw Object.assign(new Error("产品图片暂存已失效，请重新上传。"), { statusCode: 400 });
+    if ((project.productImages || []).length >= VIDEO_REMIX_LIMITS.maxProductImages) throw Object.assign(new Error("每个项目最多上传 5 张产品参考图。"), { statusCode: 400 });
+    if (!String(record.image.mimeType || "").startsWith("image/")) throw Object.assign(new Error("产品参考图必须是图片文件。"), { statusCode: 400 });
+    const mediaId = `product-${uploadId}`;
+    const extension = mediaExtension(record.image.mimeType, record.image.fileName);
+    const stagedPath = `products/${mediaId}${extension}`;
+    const targetPath = mediaAbsolutePath(id, stagedPath, { root: videoRemixMediaRoot });
+    mkdirSync(resolve(targetPath, ".."), { recursive: true });
+    const sourcePath = resolve(stagedImagesRoot, record.image.stagedPath);
+    copyFileSync(sourcePath, targetPath, { mode: 0o600 });
+    const productImage = { mediaId, fileName: record.image.fileName || `${mediaId}${extension}`, mimeType: record.image.mimeType, size: record.image.size, stagedPath, isPrimary: (project.productImages || []).length === 0 };
+    stagedUploadStore.patch(stagedUploadId, { claimedBy: id, claimedAt: new Date().toISOString(), consumedAt: new Date().toISOString() });
+    cleanupStagedMediaReferences([record.image]);
+    const updated = videoRemixStore.patch(id, { productImages: [...(project.productImages || []), productImage] });
+    sendJson(res, 201, { project: publicVideoRemixResult(updated), image: publicVideoRemixResult(updated).productImages.at(-1) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "产品图片上传失败。" });
+  }
+}
+
+async function handleVideoRemixScriptPatch(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/?]+)\/script/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  try {
+    const body = await readJsonBody(req);
+    const shots = Array.isArray(body?.shots) ? body.shots.map((shot, index) => {
+      const previous = project.shots.find((item) => item.id === shot.id) || {};
+      const sourceFrame = previous.sourceFrame || project.frames[0] || null;
+      return { ...previous, ...shot, id: String(shot.id || previous.id || `shot-${String(index + 1).padStart(2, "0")}`), order: index + 1, sourceFrame };
+    }) : project.shots;
+    const errors = validateVideoRemixDraft({ ...project, shots });
+    if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+    const resetGenerated = body?.resetGenerated === true;
+    const changedShots = shots.map((shot) => {
+      const previous = project.shots.find((item) => item.id === shot.id);
+      const promptChanged = previous && ["startSeconds", "endSeconds", "sceneSummary", "imagePrompt", "videoPrompt"].some((key) => String(previous[key] ?? "") !== String(shot[key] ?? ""));
+      if (resetGenerated) return { ...shot, imageStatus: "idle", imageTaskId: "", imageResultUrl: "", imageError: "", imageApprovedAt: null, videoStatus: "idle", videoTaskId: "", videoResultUrl: "", videoError: "" };
+      return promptChanged ? invalidateShotAfterPromptEdit(shot) : shot;
+    });
+    const updated = videoRemixStore.replaceShots(id, changedShots);
+    const patched = videoRemixStore.patch(id, { title: String(body?.title ?? project.title).trim().slice(0, 160), overallScript: String(body?.overallScript ?? project.overallScript).trim().slice(0, 10000), status: updated.status === "draft" ? "script_review" : updated.status, error: "" });
+    sendJson(res, 200, { project: publicVideoRemixResult(patched) });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "脚本保存失败。" });
+  }
+}
+
+async function handleVideoRemixAnalyze(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/?]+)\/analyze/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  if (!project.sourceVideo) return sendJson(res, 400, { message: "请先上传源视频。" });
+  if (project.status === "analyzing") return sendJson(res, 409, { message: "项目正在分析中，请稍候。" });
+  void analyzeVideoRemixProject(id).catch((error) => console.warn("[video-remix] analysis failed", error instanceof Error ? error.message : error));
+  sendJson(res, 202, { project: publicVideoRemixResult(videoRemixStore.patch(id, { status: "analyzing", error: "" })) });
+}
+
+async function handleVideoRemixConfirmScript(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/?]+)\/confirm-script/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  const errors = validateVideoRemixDraft(project);
+  if (!project.sourceVideo) errors.push("请先上传源视频。");
+  if (!project.productImages?.length) errors.push("请至少上传 1 张产品参考图。");
+  if (errors.length) return sendJson(res, 400, { message: errors[0] });
+  const updated = videoRemixStore.patch(id, { scriptConfirmedAt: new Date().toISOString(), status: "script_confirmed", error: "" });
+  sendJson(res, 200, { project: publicVideoRemixResult(updated) });
+}
+
+async function handleVideoRemixStoryboardGenerate(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/storyboards/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  if (!project.scriptConfirmedAt) return sendJson(res, 400, { message: "请先确认脚本和产品参考图。" });
+  const queued = [];
+  try {
+    for (const shot of project.shots) {
+      if (["queued", "running"].includes(shot.imageStatus) || shot.imageStatus === "approved") continue;
+      queued.push(await queueVideoRemixStoryboardShot(videoRemixStore.get(id), shot, owner));
+    }
+    sendJson(res, 202, { project: publicVideoRemixResult(videoRemixStore.patch(id, { status: queued.length ? "running" : project.status, error: "" })), taskIds: queued.map((task) => task.id) });
+  } catch (error) {
+    videoRemixStore.failQueuedShots(id, error instanceof Error ? error.message : "分镜图任务创建失败。", "image");
+    sendJson(res, Number(error?.statusCode || 502), { message: error instanceof Error ? error.message : "分镜图任务创建失败。" });
+  }
+}
+
+async function handleVideoRemixImageRetry(req, res, owner) {
+  const match = req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/shots\/([^/]+)\/retry-image/);
+  const id = decodeURIComponent(match?.[1] || "");
+  const shotId = decodeURIComponent(match?.[2] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  const shot = project?.shots?.find((item) => item.id === shotId);
+  if (!project || !shot) return sendJson(res, 404, { message: "视频再生镜头不存在。" });
+  try {
+    const task = await queueVideoRemixStoryboardShot(project, shot, owner);
+    sendJson(res, 202, { project: publicVideoRemixResult(videoRemixStore.get(id)), taskId: task.id });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 502), { message: error instanceof Error ? error.message : "镜头重生成失败。" });
+  }
+}
+
+function handleVideoRemixImageApprove(req, res, owner) {
+  const match = req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/shots\/([^/]+)\/approve-image/);
+  const id = decodeURIComponent(match?.[1] || "");
+  const shotId = decodeURIComponent(match?.[2] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  const shot = project?.shots?.find((item) => item.id === shotId);
+  if (!project || !shot) return sendJson(res, 404, { message: "视频再生镜头不存在。" });
+  if (shot.imageStatus !== "ready" || !shot.imageResultUrl) return sendJson(res, 400, { message: "该镜头还没有可确认的分镜图。" });
+  const updated = videoRemixStore.patchShot(id, shotId, { imageStatus: "approved", imageApprovedAt: new Date().toISOString(), imageError: "" });
+  sendJson(res, 200, { project: publicVideoRemixResult(updated) });
+}
+
+async function handleVideoRemixVideoGenerate(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/videos/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  if (!allStoryboardShotsApproved(project.shots)) return sendJson(res, 400, { message: "请先确认全部分镜图。" });
+  const queued = [];
+  try {
+    for (const shot of project.shots) {
+      if (["queued", "running", "done"].includes(shot.videoStatus)) continue;
+      queued.push(await queueVideoRemixVideoShot(videoRemixStore.get(id), shot, owner));
+    }
+    sendJson(res, 202, { project: publicVideoRemixResult(videoRemixStore.patch(id, { status: queued.length ? "running" : project.status, error: "" })), taskIds: queued.map((task) => task.id) });
+  } catch (error) {
+    videoRemixStore.failQueuedShots(id, error instanceof Error ? error.message : "视频任务创建失败。", "video");
+    sendJson(res, Number(error?.statusCode || 502), { message: error instanceof Error ? error.message : "视频任务创建失败。" });
+  }
+}
+
+async function handleVideoRemixVideoRetry(req, res, owner) {
+  const match = req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/shots\/([^/]+)\/retry-video/);
+  const id = decodeURIComponent(match?.[1] || "");
+  const shotId = decodeURIComponent(match?.[2] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  const shot = project?.shots?.find((item) => item.id === shotId);
+  if (!project || !shot) return sendJson(res, 404, { message: "视频再生镜头不存在。" });
+  if (shot.imageStatus !== "approved") return sendJson(res, 400, { message: "请先确认该镜头的分镜图。" });
+  try {
+    const task = await queueVideoRemixVideoShot(project, shot, owner);
+    sendJson(res, 202, { project: publicVideoRemixResult(videoRemixStore.get(id)), taskId: task.id });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 502), { message: error instanceof Error ? error.message : "视频重生成失败。" });
+  }
+}
+
+function handleVideoRemixMedia(req, res, owner) {
+  const match = req.url.match(/^\/workbench\/video-remixes\/([^/]+)\/media\/([^/?]+)/);
+  const id = decodeURIComponent(match?.[1] || "");
+  const mediaId = decodeURIComponent(match?.[2] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  const media = mediaId === "source-video"
+    ? project.sourceVideo
+    : project.frames.find((item) => item.mediaId === mediaId) || project.productImages.find((item) => item.mediaId === mediaId);
+  if (!media?.stagedPath) return sendJson(res, 404, { message: "项目媒体不存在。" });
+  try {
+    const path = resolveProjectMediaPath(id, media.stagedPath, { root: videoRemixMediaRoot });
+    const stats = statSync(path);
+    res.writeHead(200, { "content-type": media.mimeType || "application/octet-stream", "content-length": stats.size, "cache-control": "private, max-age=300" });
+    createReadStream(path).pipe(res);
+  } catch {
+    sendJson(res, 404, { message: "项目媒体不存在。" });
+  }
+}
+
+function handleVideoRemixDelete(req, res, owner) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/video-remixes\/([^/?]+)/)?.[1] || "");
+  const project = videoRemixProjectOrNotFound(id, owner);
+  if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
+  videoRemixStore.remove(id);
+  for (const task of taskStore.list().filter((item) => item.remixProjectId === id)) taskStore.remove(task.id);
+  void removeVideoRemixDirectory(id, { root: videoRemixMediaRoot }).catch((error) => console.warn("[video-remix] media cleanup failed", error instanceof Error ? error.message : error));
+  sendJson(res, 200, { ok: true });
 }
 
 function claimVideoMedia(media, owner, taskIdentifier, uploadStore) {
@@ -2030,6 +2412,96 @@ const httpServer = createServer((req, res) => {
   if (req.url === "/workbench/stage-image" && req.method === "POST") {
     const user = requireUser(req, res);
     if (user) void handleStageImage(req, res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/video-remixes" && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleVideoRemixList(res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/video-remixes" && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixCreate(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/media\/[^/?]+/) && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleVideoRemixMedia(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/source-video/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixSourceUpload(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/product-images/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixProductImage(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/script/) && req.method === "PATCH") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixScriptPatch(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/analyze/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixAnalyze(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/confirm-script/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixConfirmScript(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/storyboards/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixStoryboardGenerate(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/shots\/[^/]+\/retry-image/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixImageRetry(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/shots\/[^/]+\/approve-image/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) handleVideoRemixImageApprove(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/videos/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixVideoGenerate(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/]+\/shots\/[^/]+\/retry-video/) && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleVideoRemixVideoRetry(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/?]+$/) && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleVideoRemixGet(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/video-remixes\/[^/?]+$/) && req.method === "DELETE") {
+    const user = requireUser(req, res);
+    if (user) handleVideoRemixDelete(req, res, user);
     return;
   }
 

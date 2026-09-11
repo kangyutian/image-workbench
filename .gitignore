@@ -13,6 +13,7 @@ docs/superpowers/scratch/
 *.local
 .env
 .env.*
+!.env.example
 *.tgz
 *.tar
 *.tar.gz

@@ -2,6 +2,19 @@
 
 一个本地运行的 AI 图片生成界面，支持文生图、图生图、双图/多图融合，以及 `nanobanana` 和 `image2` 两套独立 API 配置。
 
+## 视频再生
+
+“视频再生”工作区支持上传 20 秒以内的 MP4、WebM 或 MOV，使用 GPT 视觉分析输出整体脚本和 3–8 个可编辑分镜；用户确认脚本并上传 1–5 张产品参考图后，可选择 Image2/Nano Banana 生成分镜图，再逐张确认并用 Kling 或 Seedance 生成独立的 5 秒静音视频片段。系统不会处理源视频音频，也不会自动拼接片段。
+
+生产环境需要在服务端配置 [`.env.example`](.env.example) 中的认证与模型变量，至少包括 `OPENAI_API_KEY`；密钥不会进入浏览器端或项目公开 JSON。视频源、抽帧和产品参考图保存在 `data/video-remix-media/`，删除项目时一并清理。
+
+生产模式启动：
+
+```bash
+npm.cmd run build
+npm.cmd start
+```
+
 ## 启动
 
 ```bash

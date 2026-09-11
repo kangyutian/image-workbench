@@ -1,80 +1,49 @@
-# 图片创作 Batch Desk 视觉 QA
+# 视频再生生产矩阵视觉 QA
 
 ## Comparison target
 
-- source visual truth path: `C:/Users/kangy/.codex/generated_images/019fc825-2fd5-79e2-8726-e5d9a30a8f36/exec-c4f64129-4444-46d7-8189-03c25b39e6b2.png`
-- implementation screenshot path: `C:/Users/kangy/AppData/Local/Temp/image-batch-desk-implementation.png`
-- comparison composite path: `C:/Users/kangy/AppData/Local/Temp/image-batch-desk-comparison.png`
-- viewport: `1488 x 1085` CSS px
-- source pixel dimensions: `1488 x 1085`
-- implementation pixel dimensions: `1488 x 1085`
-- device scale factor: `1`
-- density normalization: none required; source and implementation were captured at the same pixel dimensions
-- state: authenticated local preview, 图片创作选项卡，6 个真实空闲任务，16:9 全局比例，批量提示词默认收起，无内部任务侧栏，无模拟图片结果
+- source visual truth path: `C:/Users/kangy/.codex/generated_images/01a08432-d4f2-7772-83a4-f234285840b4/exec-0899fcce-c623-4394-824a-f61331bfd3ec.png`
+- implementation screenshot path: unavailable; the local in-app browser capture was displayed inline but could not be saved through the available browser surface
+- viewport: implementation capture 666 × 794 CSS px; source reference 1440 × 1024 CSS px
+- source pixel dimensions: 1440 × 1024
+- implementation pixel dimensions: not saved
+- device scale factor: implementation browser reported 1.25; source density is not available from the generated reference metadata
+- density normalization: not completed because the viewport and populated state could not be matched
+- state: implementation capture was the authenticated empty “上传视频” state; the source is a populated “分镜生产矩阵” state
 
 ## Full-view comparison evidence
 
-The combined comparison was reviewed side by side at the same viewport. The implementation now carries the selected Batch Desk structure: a compact white top bar, a dense global settings bar, and a three-column image-task grid that fills the available content area. Existing image-task controls remain data-driven; no placeholder result images or fake task states were introduced.
-
-The source concept is a standalone workbench, while the implementation retains the existing authenticated host sidebar on the far left. This is an intentional scope boundary: only the 图片创作 page was restyled, while the shared host shell and the other creation pages remain intact.
+The local authenticated preview was opened and the “视频再生” navigation was exercised. The implementation visibly contains the deep-navy existing shell, cyan active navigation, six-step progress header, project selector, source-video upload card, output ratio selector, image-model selector, and video-model selector. The implementation screenshot was shown inline during QA, but it was not written to a local file and cannot be compared pixel-for-pixel against the 1440 × 1024 populated reference.
 
 ## Focused-region comparison evidence
 
-- Header and navigation: Batch Desk identity, image tab active state, compact control height, and readable top-right account controls were checked.
-- Global toolbar: model, output count, ratio, resolution, quality, apply-all action, batch prompt disclosure, and estimate row were checked for alignment and wrapping.
-- Task grid: first-row task cards were checked for three-column layout, compact parameter controls, prompt area, reference upload affordance, and output section separation.
-- Responsive check: at `680 x 900`, the image content remains a single responsive column and document `scrollWidth` equals the viewport width (`665` CSS px after browser chrome), with no horizontal overflow.
+Not accepted as a final comparison. The current capture shows the upload state rather than the selected reference’s populated shot matrix, so dense-row spacing, original-frame/result-frame crops, expanded product-reference panel, sticky approval footer, and generated-state colors remain unverified at the target viewport.
 
 ## Findings
 
-No actionable P0, P1, or P2 visual findings remain.
-
-- Expected scope deviation: the existing authenticated host sidebar remains on the far left. It is intentionally preserved because the request limits the redesign to 图片创作 and asks other sections to remain unchanged.
-- Expected state deviation: the source contains sample thumbnails and mixed task states; the implementation screenshot uses six real idle tasks with no results because the local preview must not add static or simulated product data.
-
-## Comparison history
-
-### Pass 1
-
-- Finding: the bulk prompt was always expanded, pushing the task grid too far below the global controls and reducing the reference density.
-- Severity: P2 density mismatch.
-- Fix: changed the image-page bulk prompt into a closed-by-default `details` disclosure while keeping the existing textarea and synchronization handler available when opened.
-- Post-fix evidence: `C:/Users/kangy/AppData/Local/Temp/image-batch-desk-comparison.png`.
-
-### Pass 2
-
-- Finding: the Batch Desk mark used a text glyph and could vary by font rendering.
-- Severity: P3 polish.
-- Fix: replaced the glyph with the existing `ImagePlus` icon component.
-- Post-fix evidence: the same revised composite comparison and implementation screenshot listed above.
-- Result: no actionable P0/P1/P2 differences remain.
+- [P1] QA evidence is blocked by an unmatched capture state and viewport. The browser surface exposed 666 × 794 CSS px and no seeded populated matrix project was available without introducing a demo fixture; the selected source is 1440 × 1024 and already populated. Impact: a visual handoff claim would be unsupported. Fix: capture the authenticated populated matrix at 1440 × 1024, save it locally, create a side-by-side comparison with the source, then re-run this report.
+- No implementation P0/P1/P2 drift is asserted from the current evidence. This is an evidence blocker, not a pass.
 
 ## Primary interactions tested
 
-- Added six tasks through the image-page Batch Desk “添加任务” action.
-- Opened and collapsed “批量提示词”; the textarea remained available and visible when expanded.
-- Changed the global ratio to `16:9` and clicked “应用到所有任务卡”; all task-card ratio controls updated to `16:9`.
-- Switched to 视频创作、产品抠图、印花提取、商品套图; no image-only internal navigation column was rendered and the original page classes remained active.
-- Checked the browser console for errors and warnings: none reported.
+- Logged into the local server with a temporary QA account and restored the pre-existing `data/users.json` afterward.
+- Opened the “视频再生” workbench tab and verified the upload state and six-step workflow labels.
+- Checked browser console errors and warnings: none reported.
+- Authenticated API smoke tested project create/get/delete and a real 2-second MP4 source upload with ffprobe duration and dimensions.
+
+## Comparison history
+
+### Pass 1 — blocked
+
+- Evidence: inline local browser capture at 666 × 794, upload state only.
+- Result: source and implementation could not be normalized to the same viewport and state; no visual fixes were claimed.
 
 ## Implementation Checklist
 
-- [x] Image-only `creation-image` scope added.
-- [x] Batch Desk header and image-only layout scope added only to 图片创作.
-- [x] Compact global settings and three-column task grid added.
-- [x] Existing image task state, references, parameters, generation, results, and actions preserved.
-- [x] Bulk prompt remains available through a compact disclosure.
-- [x] Desktop and mobile overflow checked.
-- [x] Automated tests, production build, and `git diff --check` passed.
+- [x] Video remix route is reachable from the existing workbench shell.
+- [x] Upload state and six-step workflow render without console errors.
+- [x] Authenticated project and source-video route smoke tests completed.
+- [ ] Capture the populated matrix at 1440 × 1024.
+- [ ] Compare source and implementation side by side and resolve actionable P0/P1/P2 findings.
 
-## Follow-up Polish
-
-- P3: If the product later adopts the standalone Batch Desk shell globally, the host sidebar can be reconciled into one navigation layer. This is intentionally outside the current request.
-
-### Pass 3
-
-- Refinement: removed the image-only internal task navigation column (`新建任务 / 任务分组 / 文件夹`) at the user's request.
-- Fix: changed the 图片创作 layout to a single main-content track, removed the retired sidebar markup and styles, and kept the shared outer navigation unchanged.
-- Post-fix evidence: `C:/Users/kangy/AppData/Local/Temp/image-batch-desk-implementation.png`.
-
-final result: passed
+final result: blocked
