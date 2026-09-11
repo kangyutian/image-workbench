@@ -8,4 +8,6 @@ test("workbench sidebar omits retired navigation entries", async () => {
 
   assert.doesNotMatch(sidebar, /素材库|任务记录|API Key|设置/);
   assert.doesNotMatch(sidebar, /sidebar-secondary/);
+  assert.match(sidebar, /<span>image ai -- ice<\/span>/);
+  assert.doesNotMatch(sidebar, /<span>Wavespeed AI<\/span>/);
 });
