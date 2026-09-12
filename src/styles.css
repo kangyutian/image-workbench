@@ -1023,11 +1023,11 @@ button:disabled { cursor: not-allowed; opacity: 0.62; }
 .video-remix-project-picker { align-items: center; display: flex; gap: 9px; min-width: 250px; }
 .video-remix-project-picker label, .settings-label { color: #738496; font-size: 12px; font-weight: 800; white-space: nowrap; }
 .video-remix-project-picker select { min-width: 210px; }
-.video-remix-steps { align-items: center; background: #fff; border: 1px solid #d9e3eb; border-radius: 9px; box-shadow: 0 3px 12px rgba(30,52,72,.04); display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 11px 15px; }
-.video-remix-step { align-items: center; color: #9aa8b4; display: flex; font-size: 12px; font-weight: 800; gap: 7px; min-width: 0; }
+.video-remix-steps { align-items: center; background: #fff; border: 1px solid #d9e3eb; border-radius: 9px; box-shadow: 0 3px 12px rgba(30,52,72,.04); display: flex; gap: 0; overflow-x: auto; padding: 11px 15px; }
+.video-remix-step { align-items: center; color: #9aa8b4; display: flex; flex: 1 1 0; font-size: 12px; font-weight: 800; gap: 7px; min-width: 150px; }
 .video-remix-step > span { align-items: center; border: 1px solid #ccd8e1; border-radius: 50%; display: inline-flex; flex: 0 0 auto; height: 24px; justify-content: center; width: 24px; }
-.video-remix-step > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.video-remix-step > i { background: #dce5eb; height: 1px; margin: 0 12px; width: 100%; }
+.video-remix-step > strong { overflow: visible; text-overflow: clip; white-space: nowrap; }
+.video-remix-step > i { background: #dce5eb; flex: 1 0 24px; height: 1px; margin: 0 12px; width: auto; }
 .video-remix-step.active { color: #118994; }
 .video-remix-step.active > span { background: #e5fbfb; border-color: #10bcc5; color: #008893; }
 .video-remix-step.complete { color: #177b65; }
@@ -1119,8 +1119,8 @@ button:disabled { cursor: not-allowed; opacity: 0.62; }
 @media (max-width: 760px) {
   .creation-remix .workbench-layout { padding: 12px 10px 34px; }
   .creation-remix .workbench-nav { gap: 3px; overflow-x: auto; }
-  .video-remix-steps { gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .video-remix-step > i { display: none; }
+  .video-remix-steps { gap: 8px; padding-inline: 12px; }
+  .video-remix-step { flex: 0 0 150px; }
   .video-remix-settings, .video-remix-script-shots { grid-template-columns: 1fr; }
   .video-remix-file-row, .video-remix-product-upload, .video-remix-matrix-top, .video-remix-matrix-footer { align-items: stretch; flex-direction: column; }
   .video-remix-file-row > span { order: 3; }

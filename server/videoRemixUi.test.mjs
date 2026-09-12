@@ -21,6 +21,12 @@ test("video remix workspace can start a new task without creating an empty proje
   assert.match(source, /event\.target\.value === "new"/);
 });
 
+test("video remix step labels remain fully readable", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.video-remix-steps \{[^}]*display: flex;[^}]*overflow-x: auto;/s);
+  assert.match(styles, /\.video-remix-step > strong \{[^}]*overflow: visible;[^}]*text-overflow: clip;/s);
+});
+
 test("workbench navigation includes video remix without removing existing tabs", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(source, /setCreationKind\("remix"\)/);
