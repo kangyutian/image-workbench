@@ -1,7 +1,9 @@
 import { VIDEO_REMIX_LIMITS, validateVideoRemixDraft } from "../shared/videoRemixModels.mjs";
 
 const DEFAULT_MODEL = process.env.OPENAI_VIDEO_ANALYSIS_MODEL || "gpt-5.6-terra";
-const RESPONSES_URL = "https://api.openai.com/v1/responses";
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const WAVESPEED_LLM_BASE_URL = process.env.WAVESPEED_VIDEO_ANALYSIS_BASE_URL || "https://llm.wavespeed.ai/v1";
+const WAVESPEED_DEFAULT_MODEL = process.env.WAVESPEED_VIDEO_ANALYSIS_MODEL || "openai/gpt-5.6-sol";
 
 const ANALYSIS_SCHEMA = {
   type: "object",
@@ -34,6 +36,12 @@ const SYSTEM_PROMPT = "Analyze only the visual track. Preserve shot order, pacin
 
 function responseText(body) {
   if (typeof body?.output_text === "string") return body.output_text;
+  const messageContent = body?.choices?.[0]?.message?.content;
+  if (typeof messageContent === "string") return messageContent;
+  if (Array.isArray(messageContent)) {
+    const text = messageContent.map((item) => item?.text || item?.content || "").filter(Boolean).join("");
+    if (text) return text;
+  }
   const text = body?.output
     ?.flatMap((item) => Array.isArray(item?.content) ? item.content : [])
     ?.map((item) => item?.text)
@@ -100,9 +108,10 @@ function normalizeAnalysis(parsed, durationSeconds) {
   };
 }
 
-export async function analyzeVideoFrames({ frames = [], durationSeconds, aspectRatio, apiKey = process.env.OPENAI_API_KEY, model = DEFAULT_MODEL, fetchImpl = fetch } = {}) {
-  if (!apiKey) throw new Error("服务器未配置 OPENAI_API_KEY。");
+export async function analyzeVideoFrames({ frames = [], durationSeconds, aspectRatio, apiKey = process.env.WAVESPEED_VIDEO_REMIX_API_KEY || process.env.OPENAI_API_KEY, model = DEFAULT_MODEL, fetchImpl = fetch } = {}) {
+  if (!apiKey) throw new Error("服务器未配置视频分析 API Key，请设置 WAVESPEED_VIDEO_REMIX_API_KEY。");
   if (!Array.isArray(frames) || frames.length === 0) throw new Error("没有可供 GPT 分析的关键帧。");
+  const useWaveSpeed = /^wsk_live_/i.test(String(apiKey));
   const input = frames.map((frame) => ({
     role: "user",
     content: [
@@ -110,23 +119,40 @@ export async function analyzeVideoFrames({ frames = [], durationSeconds, aspectR
       { type: "input_image", image_url: frame.dataUrl, detail: "low" },
     ],
   }));
-  const body = {
-    model,
-    instructions: SYSTEM_PROMPT,
-    input,
-    text: { format: { type: "json_schema", name: "video_remix_analysis", strict: true, schema: ANALYSIS_SCHEMA } },
-  };
+  const body = useWaveSpeed
+    ? {
+      model: String(model).includes("/") ? model : WAVESPEED_DEFAULT_MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: frames.flatMap((frame) => [
+            { type: "text", text: `这是源视频在 ${Number(frame.timestampSeconds).toFixed(2)} 秒处的画面。输出比例要求：${aspectRatio || "9:16"}。` },
+            { type: "image_url", image_url: { url: frame.dataUrl } },
+          ]),
+        },
+      ],
+      response_format: { type: "json_object" },
+    }
+    : {
+      model,
+      instructions: SYSTEM_PROMPT,
+      input,
+      text: { format: { type: "json_schema", name: "video_remix_analysis", strict: true, schema: ANALYSIS_SCHEMA } },
+    };
+  const endpoint = useWaveSpeed ? `${WAVESPEED_LLM_BASE_URL.replace(/\/$/, "")}/chat/completions` : OPENAI_RESPONSES_URL;
   let response;
   try {
-    response = await fetchImpl(RESPONSES_URL, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
+    response = await fetchImpl(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) });
   } catch {
-    throw new Error("OpenAI 分析服务连接失败，请稍后重试。");
+    throw new Error(`${useWaveSpeed ? "WaveSpeedAI" : "OpenAI"} 分析服务连接失败，请稍后重试。`);
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error("OpenAI 鉴权失败，请检查服务器 OPENAI_API_KEY。");
-    if (response.status === 404) throw new Error(`OpenAI 模型不可用：${model}。`);
-    throw new Error(`OpenAI 分析失败（HTTP ${response.status}）。`);
+    const provider = useWaveSpeed ? "WaveSpeedAI" : "OpenAI";
+    if (response.status === 401 || response.status === 403) throw new Error(`${provider} 鉴权失败，请检查视频分析 API Key。`);
+    if (response.status === 404) throw new Error(`${provider} 模型不可用：${body.model}。`);
+    throw new Error(`${provider} 分析失败（HTTP ${response.status}）。`);
   }
   return normalizeAnalysis(parseAnalysis(payload), Number(durationSeconds));
 }

@@ -8,6 +8,12 @@ test("video remix workspace exposes the full gated journey", async () => {
   for (const action of ["确认全部分镜", "重新生成本镜头", "前往生成视频"]) assert.match(source, new RegExp(action));
 });
 
+test("video remix workspace exposes an actionable analysis failure state", async () => {
+  const source = await readFile(new URL("../src/VideoRemixWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(source, /current\.status === "error"/);
+  assert.match(source, /重新分析/);
+});
+
 test("workbench navigation includes video remix without removing existing tabs", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(source, /setCreationKind\("remix"\)/);

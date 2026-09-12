@@ -59,7 +59,7 @@ export function syncRemixTaskResult({ projectStore, task }) {
 }
 
 export function remixTaskMetadata(projectId, shotId, stage) {
-  return { remixProjectId: projectId, remixShotId: shotId, remixStage: stage };
+  return { remixProjectId: projectId, remixShotId: shotId, remixStage: stage, credentialScope: "video-remix" };
 }
 
 export { PRODUCT_IDENTITY_LOCK };

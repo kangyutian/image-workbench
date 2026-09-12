@@ -34,8 +34,7 @@ export async function analyzeVideoRemix(id: string) {
 
 export async function uploadVideoRemixProductImage(id: string, file: File) {
   const media = await prepareProductSuiteImage(file);
-  const staged = (await request("/workbench/stage-image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ media }) })).media as { stagedUploadId: string };
-  return (await request(`/workbench/video-remixes/${encodeURIComponent(id)}/product-images`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stagedUploadId: staged.stagedUploadId }) })).project as VideoRemixProject;
+  return (await request(`/workbench/video-remixes/${encodeURIComponent(id)}/product-images`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ media }) })).project as VideoRemixProject;
 }
 
 export async function saveVideoRemixScript(id: string, input: Pick<VideoRemixProject, "title" | "overallScript"> & { shots: VideoRemixShot[]; resetGenerated?: boolean }) {

@@ -4,6 +4,7 @@ import { VideoRemixStore } from "./videoRemixStore.mjs";
 import {
   allStoryboardShotsApproved,
   imageRequestForShot,
+  remixTaskMetadata,
   syncRemixTaskResult,
   videoRequestForShot,
 } from "./videoRemixOrchestrator.mjs";
@@ -48,6 +49,15 @@ test("builds a fixed five-second silent video task from one storyboard result", 
   assert.equal(request.duration, 5);
   assert.equal(request.generateAudio, false);
   assert.deepEqual(request.referenceImages, [{ url: "https://cdn.test/shot-2.png" }]);
+});
+
+test("marks remix tasks for the dedicated video credential scope", () => {
+  assert.deepEqual(remixTaskMetadata("remix-1", "shot-01", "storyboard"), {
+    remixProjectId: "remix-1",
+    remixShotId: "shot-01",
+    remixStage: "storyboard",
+    credentialScope: "video-remix",
+  });
 });
 
 test("syncs one child task result back to exactly one remix shot", () => {

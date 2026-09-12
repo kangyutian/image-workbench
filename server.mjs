@@ -336,6 +336,7 @@ function envKeyForRequest(request = {}) {
 }
 
 function usageEnvKeyForEntry(entry = {}) {
+  if (entry.credentialScope === "video-remix") return "WAVESPEED_VIDEO_REMIX_API_KEY";
   if (entry.kind === "image" && entry.modelId === "bria-extract-object") return cutoutEnvKey();
   if (entry.kind === "image" && entry.provider === "image2") return envKeyForImage2Model(entry.modelId);
   return envKeyForModelRequest(entry.kind === "video"
@@ -348,6 +349,15 @@ function billingApiKeyForEnvKey(envKey) {
 }
 
 function wavespeedApiKeyFor(request = {}) {
+  if (request.remixProjectId || request.remixStage) {
+    const videoKey = cleanApiKey(process.env.WAVESPEED_VIDEO_REMIX_API_KEY || "");
+    if (!videoKey) {
+      const error = new Error("服务器未配置视频再生服务的 WaveSpeedAI API Key。请设置 WAVESPEED_VIDEO_REMIX_API_KEY。");
+      error.statusCode = 500;
+      throw error;
+    }
+    return { apiKey: videoKey, envKey: "WAVESPEED_VIDEO_REMIX_API_KEY" };
+  }
   const envKey = envKeyForRequest(request);
   const modelKey = cleanApiKey(process.env[envKey] || "");
   const fallbackKey = cleanApiKey(process.env.WAVESPEED_API_KEY || "");
@@ -1612,26 +1622,35 @@ async function handleVideoRemixProductImage(req, res, owner) {
   const project = videoRemixProjectOrNotFound(id, owner);
   if (!project) return sendJson(res, 404, { message: "视频再生项目不存在。" });
   const uploadId = taskId();
+  let directImage = null;
   try {
     const body = await readJsonBody(req);
     const stagedUploadId = String(body?.stagedUploadId || "");
     const record = stagedUploadId ? stagedUploadStore.get(stagedUploadId) : null;
-    if (!record || record.owner !== owner.username || record.accountId !== owner.accountId || record.claimedBy || !record.image?.stagedPath) throw Object.assign(new Error("产品图片暂存已失效，请重新上传。"), { statusCode: 400 });
+    if (body?.media) {
+      directImage = stageImagesLocally([body.media], { taskId: uploadId, root: stagedImagesRoot, maxBytes: maxImportedImageBytes })[0];
+    } else if (!record || record.owner !== owner.username || record.accountId !== owner.accountId || record.claimedBy || !record.image?.stagedPath) {
+      throw Object.assign(new Error("产品图片暂存已失效，请重新上传。"), { statusCode: 400 });
+    }
+    const sourceImage = directImage || record.image;
+    if (!sourceImage?.stagedPath) throw Object.assign(new Error("产品图片暂存已失效，请重新上传。"), { statusCode: 400 });
     if ((project.productImages || []).length >= VIDEO_REMIX_LIMITS.maxProductImages) throw Object.assign(new Error("每个项目最多上传 5 张产品参考图。"), { statusCode: 400 });
-    if (!String(record.image.mimeType || "").startsWith("image/")) throw Object.assign(new Error("产品参考图必须是图片文件。"), { statusCode: 400 });
+    if (!String(sourceImage.mimeType || "").startsWith("image/")) throw Object.assign(new Error("产品参考图必须是图片文件。"), { statusCode: 400 });
     const mediaId = `product-${uploadId}`;
-    const extension = mediaExtension(record.image.mimeType, record.image.fileName);
+    const extension = mediaExtension(sourceImage.mimeType, sourceImage.fileName);
     const stagedPath = `products/${mediaId}${extension}`;
     const targetPath = mediaAbsolutePath(id, stagedPath, { root: videoRemixMediaRoot });
     mkdirSync(resolve(targetPath, ".."), { recursive: true });
-    const sourcePath = resolve(stagedImagesRoot, record.image.stagedPath);
+    const sourcePath = resolve(stagedImagesRoot, sourceImage.stagedPath);
     copyFileSync(sourcePath, targetPath, { mode: 0o600 });
-    const productImage = { mediaId, fileName: record.image.fileName || `${mediaId}${extension}`, mimeType: record.image.mimeType, size: record.image.size, stagedPath, isPrimary: (project.productImages || []).length === 0 };
-    stagedUploadStore.patch(stagedUploadId, { claimedBy: id, claimedAt: new Date().toISOString(), consumedAt: new Date().toISOString() });
-    cleanupStagedMediaReferences([record.image]);
+    const productImage = { mediaId, fileName: sourceImage.fileName || `${mediaId}${extension}`, mimeType: sourceImage.mimeType, size: sourceImage.size, stagedPath, isPrimary: (project.productImages || []).length === 0 };
+    if (stagedUploadId) stagedUploadStore.patch(stagedUploadId, { claimedBy: id, claimedAt: new Date().toISOString(), consumedAt: new Date().toISOString() });
+    cleanupStagedMediaReferences([sourceImage]);
     const updated = videoRemixStore.patch(id, { productImages: [...(project.productImages || []), productImage] });
     sendJson(res, 201, { project: publicVideoRemixResult(updated), image: publicVideoRemixResult(updated).productImages.at(-1) });
   } catch (error) {
+    if (directImage?.stagedPath) cleanupStagedImages(uploadId, { root: stagedImagesRoot });
+    console.warn("[video-remix] product image upload failed", JSON.stringify({ projectId: id, stage: "product-image-upload", error: error instanceof Error ? error.message : "unknown" }));
     sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "产品图片上传失败。" });
   }
 }

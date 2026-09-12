@@ -42,10 +42,34 @@ test("sends timestamped image inputs and requests strict structured JSON", async
   assert.equal(request.input[1].content[1].image_url, "data:image/jpeg;base64,BBBB");
 });
 
+test("uses the WaveSpeed OpenAI-compatible endpoint for a WSK video analysis key", async () => {
+  let calledUrl = "";
+  let request;
+  const result = await analyzeVideoFrames({
+    frames: [{ timestampSeconds: 1.2, dataUrl: "data:image/jpeg;base64,AAAA" }],
+    durationSeconds: 8,
+    aspectRatio: "9:16",
+    apiKey: "wsk_live_test_key_123456789012345",
+    model: "openai/gpt-5.6-sol",
+    fetchImpl: async (url, init) => {
+      calledUrl = url;
+      request = JSON.parse(init.body);
+      return response({ choices: [{ message: { content: JSON.stringify(validAnalysis) } }] });
+    },
+  });
+
+  assert.equal(calledUrl, "https://llm.wavespeed.ai/v1/chat/completions");
+  assert.equal(request.model, "openai/gpt-5.6-sol");
+  assert.equal(request.response_format.type, "json_object");
+  assert.equal(request.messages[1].content[1].type, "image_url");
+  assert.equal(request.messages[1].content[1].image_url.url, "data:image/jpeg;base64,AAAA");
+  assert.equal(result.shots.length, 3);
+});
+
 test("rejects missing credentials and upstream authorization failures", async () => {
   await assert.rejects(
     analyzeVideoFrames({ frames: [], durationSeconds: 8, aspectRatio: "9:16", fetchImpl: async () => response({}) }),
-    /未配置 OPENAI_API_KEY/,
+    /未配置视频分析 API Key/,
   );
   await assert.rejects(
     analyzeVideoFrames({ frames: [{ timestampSeconds: 1, dataUrl: "data:image/jpeg;base64,AAAA" }], durationSeconds: 8, aspectRatio: "9:16", apiKey: "test-key", fetchImpl: async () => response({ error: { message: "unauthorized" } }, 401) }),

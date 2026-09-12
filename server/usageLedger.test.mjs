@@ -47,6 +47,17 @@ test("records only new tasks with complete prediction IDs and no prompt or media
   }
 });
 
+test("persists the non-secret credential scope for video remix billing", () => {
+  const directory = mkdtempSync(join(tmpdir(), "workbench-usage-video-remix-scope-"));
+  try {
+    const ledger = new UsageLedger({ file: join(directory, "usage-ledger.json"), startAt: "2026-08-10T00:00:00.000Z" });
+    ledger.upsertTask(task({ input: { kind: "video", modelId: "seedance-2-fast-image-to-video", credentialScope: "video-remix" }, kind: "video" }));
+    assert.equal(ledger.get("task-1").credentialScope, "video-remix");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("merges matched billing UUIDs and keeps billing state durable", () => {
   const directory = mkdtempSync(join(tmpdir(), "workbench-usage-billing-"));
   const file = join(directory, "usage-ledger.json");

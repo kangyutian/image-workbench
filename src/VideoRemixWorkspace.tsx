@@ -39,7 +39,7 @@ function formatSeconds(value: number) {
 
 function projectStep(project: VideoRemixProject | null, viewStage: "storyboard" | "video") {
   if (!project?.sourceVideo) return 0;
-  if (project.status === "analyzing") return 1;
+  if (project.status === "analyzing" || project.status === "error") return 1;
   if (!project.scriptConfirmedAt) return 2;
   if (viewStage === "storyboard" && project.shots.some((shot) => shot.imageStatus !== "approved")) return 2;
   if (viewStage === "video" && project.shots.some((shot) => shot.videoStatus !== "done")) return 3;
@@ -138,6 +138,17 @@ export function VideoRemixWorkspace() {
       setProject(analyzing);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "视频项目创建失败。");
+    } finally { setBusy(""); }
+  }
+
+  async function retryAnalysis() {
+    if (!current?.sourceVideo) return;
+    setBusy("正在重新分析视频"); setError("");
+    try {
+      const analyzing = await analyzeVideoRemix(current.id);
+      setProject(analyzing); setDraftProject(null);
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : "视频分析失败，请重试。");
     } finally { setBusy(""); }
   }
 
@@ -311,8 +322,9 @@ export function VideoRemixWorkspace() {
 
     {current?.sourceVideo && <>
       <div className="video-remix-project-settings"><span className="settings-label">项目设置</span><label>画面比例<select value={current.aspectRatio} disabled><option>{current.aspectRatio}</option></select></label><label>图像模型<select value={current.imageModelId} disabled><option>{imageModels.find((model) => model.id === current.imageModelId)?.label || current.imageModelId}</option></select></label><label>视频模型<select value={current.videoModelId} disabled><option>{videoModels.find((model) => model.id === current.videoModelId)?.label || current.videoModelId}</option></select></label><label>每段视频时长<select disabled><option>5 秒（固定）</option></select></label><span className="settings-note"><Clock3 size={17} />每个镜头输出独立 5 秒视频，不自动拼接</span></div>
+      {current.status === "error" && <div className="video-remix-analysis panel video-remix-analysis-error"><div><p className="eyebrow">STEP 02 · SMART ANALYSIS</p><h2>视频分析失败</h2><span>{current.error || "视频分析失败，请重试。"}</span></div><button className="secondary" type="button" disabled={Boolean(busy)} onClick={() => void retryAnalysis()}><RefreshCcw size={16} />重新分析</button></div>}
       {current.status === "analyzing" && <div className="video-remix-analysis panel"><Loader2 className="spin" size={28} /><div><p className="eyebrow">STEP 02 · SMART ANALYSIS</p><h2>正在拆解视频镜头</h2><span>提取关键帧并分析画面结构，完成后你可以手动修改脚本。</span></div></div>}
-      {current.status !== "analyzing" && !current.scriptConfirmedAt && <section className="video-remix-script panel">
+      {current.status !== "analyzing" && current.status !== "error" && !current.scriptConfirmedAt && <section className="video-remix-script panel">
         <div className="video-remix-script-top"><div><p className="eyebrow">STEP 03 · SCRIPT REVIEW</p><h2>确认整体脚本与分镜</h2><span>先修改脚本，再上传你的产品参考图。只有确认后才会开始付费生成。</span></div><video controls preload="metadata" src={current.sourceVideo.previewUrl} /></div>
         <label className="field"><span>项目标题</span><input value={titleLabel} onChange={(event) => { setTitle(event.target.value); setDraftProject({ ...current, title: event.target.value }); }} /></label>
         <label className="field"><span>视频整体脚本</span><textarea value={current.overallScript} onChange={(event) => setDraftProject({ ...current, overallScript: event.target.value })} rows={4} /></label>
