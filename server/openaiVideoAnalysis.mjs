@@ -127,7 +127,7 @@ export async function analyzeVideoFrames({ frames = [], durationSeconds, aspectR
         {
           role: "user",
           content: frames.flatMap((frame) => [
-            { type: "text", text: `这是源视频在 ${Number(frame.timestampSeconds).toFixed(2)} 秒处的画面。输出比例要求：${aspectRatio || "9:16"}。` },
+            { type: "text", text: `这是源视频在 ${Number(frame.timestampSeconds).toFixed(2)} 秒处的画面。输出比例要求：${aspectRatio || "9:16"}。请将整体分析结果输出为 json。` },
             { type: "image_url", image_url: { url: frame.dataUrl } },
           ]),
         },

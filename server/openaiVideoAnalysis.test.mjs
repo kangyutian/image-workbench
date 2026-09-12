@@ -62,6 +62,7 @@ test("uses the WaveSpeed OpenAI-compatible endpoint for a WSK video analysis key
   assert.equal(request.model, "openai/gpt-5.6-sol");
   assert.equal(request.response_format.type, "json_object");
   assert.match(request.messages[0].content, /json/i);
+  assert.match(request.messages[1].content[0].text, /json/i);
   assert.equal(request.messages[1].content[1].type, "image_url");
   assert.equal(request.messages[1].content[1].image_url.url, "data:image/jpeg;base64,AAAA");
   assert.equal(result.shots.length, 3);
