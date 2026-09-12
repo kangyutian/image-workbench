@@ -32,7 +32,7 @@ const ANALYSIS_SCHEMA = {
   },
 };
 
-const SYSTEM_PROMPT = "Analyze only the visual track. Preserve shot order, pacing, camera language, and marketing intent, but do not copy brands, faces, logos, written claims, or unrelated products. Return 3–8 shots covering the source duration. Write product-neutral Chinese prompts that can later substitute the user's reference product. Each image prompt must describe composition, camera, lighting, environment, and product role. Each video prompt must describe only five seconds of motion and camera behavior.";
+const SYSTEM_PROMPT = "Analyze only the visual track. Return valid JSON only. Preserve shot order, pacing, camera language, and marketing intent, but do not copy brands, faces, logos, written claims, or unrelated products. Return 3–8 shots covering the source duration. Write product-neutral Chinese prompts that can later substitute the user's reference product. Each image prompt must describe composition, camera, lighting, environment, and product role. Each video prompt must describe only five seconds of motion and camera behavior.";
 
 function responseText(body) {
   if (typeof body?.output_text === "string") return body.output_text;
