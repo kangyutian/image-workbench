@@ -14,6 +14,13 @@ test("video remix workspace exposes an actionable analysis failure state", async
   assert.match(source, /重新分析/);
 });
 
+test("video remix workspace can start a new task without creating an empty project", async () => {
+  const source = await readFile(new URL("../src/VideoRemixWorkspace.tsx", import.meta.url), "utf8");
+  assert.match(source, /function startNewProject\(\)/);
+  assert.match(source, /新建任务/);
+  assert.match(source, /event\.target\.value === "new"/);
+});
+
 test("workbench navigation includes video remix without removing existing tabs", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(source, /setCreationKind\("remix"\)/);

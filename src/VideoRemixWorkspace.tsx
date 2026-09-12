@@ -103,6 +103,23 @@ export function VideoRemixWorkspace() {
     setError("");
   }
 
+  function startNewProject() {
+    setProject(null);
+    setDraftProject(null);
+    setSourceFile(null);
+    setSourceDuration(null);
+    setExpandedShotId(null);
+    setTitle("视频再生项目");
+    setAspectRatio("9:16");
+    setImageModelId("gpt-image-2.5-sunburst");
+    setVideoModelId("seedance-2-fast-image-to-video");
+    setViewStage("storyboard");
+    setBusy("");
+    setError("");
+    if (sourceInput.current) sourceInput.current.value = "";
+    if (productInput.current) productInput.current.value = "";
+  }
+
   async function chooseSource(file: File) {
     setError("");
     if (!["video/mp4", "video/webm", "video/quicktime"].includes(file.type)) { setError("视频仅支持 MP4、WebM 或 MOV 文件。"); return; }
@@ -306,7 +323,7 @@ export function VideoRemixWorkspace() {
   return <section className="video-remix-workspace">
     <header className="video-remix-heading">
       <div><p className="eyebrow">VIDEO REMIX</p><h1>{titleLabel}</h1><span>保留原视频的镜头逻辑，用你的产品重新生成独立视频片段。</span></div>
-      <div className="video-remix-project-picker"><label>项目</label><select value={current?.id || "new"} onChange={(event) => { const next = projects.find((item) => item.id === event.target.value); if (next) selectProject(next); }}><option value="new">新建视频再生项目</option>{projects.map((item) => <option value={item.id} key={item.id}>{item.title || item.id}</option>)}</select></div>
+      <div className="video-remix-project-picker"><label>项目</label><select value={current?.id || "new"} onChange={(event) => { if (event.target.value === "new") { startNewProject(); return; } const next = projects.find((item) => item.id === event.target.value); if (next) selectProject(next); }}><option value="new">新建视频再生项目</option>{projects.map((item) => <option value={item.id} key={item.id}>{item.title || item.id}</option>)}</select><button className="secondary" type="button" onClick={startNewProject}>新建任务</button></div>
     </header>
 
     <div className="video-remix-steps">{steps.map((label, index) => <div className={`video-remix-step ${index < step ? "complete" : ""} ${index === step ? "active" : ""}`} key={label}><span>{index < step ? <Check size={15} /> : index + 1}</span><strong>{label}</strong>{index < steps.length - 1 && <i />}</div>)}</div>
