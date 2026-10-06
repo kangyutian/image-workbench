@@ -81,6 +81,23 @@ test("product suite now exposes four generated views without the product detail 
   assert.doesNotMatch(app, /产品细节特写图|product-detail/);
 });
 
+test("product suite uses the shared stable navigation and a grouped creation flow", async () => {
+  const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+
+  assert.match(app, /<header className="workbench-topbar image-workbench-topbar">/);
+  assert.doesNotMatch(app, /creationKind !== "suite" \? "image-workbench-topbar"/);
+  assert.doesNotMatch(app, /creationKind !== "suite" && <div className="image-workbench-brand"/);
+  assert.match(app, /id="suite-assets-heading">商品素材/);
+  assert.match(app, /id="suite-model-heading">模特与生成设置/);
+  assert.match(app, /id="suite-prompt-heading">提示词版本/);
+  assert.match(app, /<details className="suite-optional-details suite-model-reference-details">/);
+  assert.match(app, /<summary>更多模特外观设置<span>/);
+  assert.match(app, /<section className="product-suite-queue">/);
+  assert.match(css, /\.creation-suite \.image-workbench-topbar/);
+  assert.match(css, /\.suite-form-section[^}]*display:\s*grid/s);
+});
+
 test("each creation tab only renders its own task module", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 

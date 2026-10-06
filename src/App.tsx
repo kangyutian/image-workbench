@@ -7,7 +7,9 @@ import {
   ImagePlus,
   Loader2,
   Plus,
+  Pencil,
   RefreshCcw,
+  Save,
   Scissors,
   Trash2,
   UploadCloud,
@@ -17,10 +19,10 @@ import {
 } from "lucide-react";
 import { cancelVideoTask, createVideoTask, loadVideoTasks, retryVideoTask, uploadVideoMedia, type VideoMedia, type VideoModelId, type VideoTask } from "./lib/videoApi";
 import { createCutoutTask, loadCutoutTasks, type CutoutBackgroundMode, type CutoutTask } from "./lib/cutoutApi";
-import { createProductSuite, loadProductSuites, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePrompts } from "./lib/productSuiteApi";
+import { createProductSuite, createProductSuitePromptSet, deleteProductSuitePromptSet, loadProductSuitePromptSets, loadProductSuites, previewProductSuitePrompts, productSuiteZipUrl, recoverProductSuiteBackground as recoverProductSuiteBackgroundApi, retryProductSuiteItem, updateProductSuitePromptSet, updateProductSuitePrompts } from "./lib/productSuiteApi";
 import { prepareProductSuiteImage } from "./lib/productSuiteImageCompression";
 import { VideoRemixWorkspace } from "./VideoRemixWorkspace";
-import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteModelAppearance, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
+import type { ProductSuite, ProductSuiteAgeRange, ProductSuiteBodyType, ProductSuiteGender, ProductSuiteHairColor, ProductSuiteHairStyle, ProductSuiteMedia, ProductSuiteModel, ProductSuiteModelAppearance, ProductSuitePromptSet, ProductSuiteSkinTone, ProductSuiteSlot } from "./productSuiteTypes";
 import { maxVideoReferenceImages, orderedVideoReferences, supportsVideoEndFrame } from "../shared/videoFramePolicy";
 import { createLatestRequestGuard, type LatestRequestGuard } from "../shared/latestRequestGuard";
 import {
@@ -446,6 +448,19 @@ function App() {
   const [suiteBackgroundMode, setSuiteBackgroundMode] = useState<"white" | "custom">("white");
   const [suiteProductName, setSuiteProductName] = useState("");
   const [suiteSellingPoints, setSuiteSellingPoints] = useState("");
+  const [suitePromptSets, setSuitePromptSets] = useState<ProductSuitePromptSet[]>([]);
+  const [suitePromptSetId, setSuitePromptSetId] = useState("system-default");
+  const [suitePromptDrafts, setSuitePromptDrafts] = useState<Partial<Record<ProductSuiteSlot, string>>>({});
+  const [suitePromptDraftSetId, setSuitePromptDraftSetId] = useState("");
+  const [suitePromptDraftDirty, setSuitePromptDraftDirty] = useState(false);
+  const [suitePromptEditorOpen, setSuitePromptEditorOpen] = useState(false);
+  const [suitePromptManagerOpen, setSuitePromptManagerOpen] = useState(false);
+  const [suitePromptSetEditId, setSuitePromptSetEditId] = useState("");
+  const [suitePromptSetName, setSuitePromptSetName] = useState("");
+  const [suitePromptSetDrafts, setSuitePromptSetDrafts] = useState<Partial<Record<ProductSuiteSlot, string>>>({});
+  const [suitePromptSetRequiresBackground, setSuitePromptSetRequiresBackground] = useState(false);
+  const [suitePromptSetSaving, setSuitePromptSetSaving] = useState(false);
+  const [suitePromptSetError, setSuitePromptSetError] = useState("");
   const [suiteError, setSuiteError] = useState("");
   const [suiteSubmitting, setSuiteSubmitting] = useState(false);
   const [suiteRecoveringId, setSuiteRecoveringId] = useState("");
@@ -514,6 +529,16 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    void loadProductSuitePromptSets().then((promptSets) => {
+      if (mounted) setSuitePromptSets(promptSets);
+    }).catch(() => {
+      if (mounted) setSuitePromptSetError("提示词版本暂时无法加载；系统默认文案仍可使用。");
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
     async function refresh() {
       try {
         const next = await loadCutoutTasks();
@@ -556,12 +581,116 @@ function App() {
     }
   }
 
+  function suitePromptPreviewInput() {
+    return {
+      model: suiteModel,
+      gender: suiteGender,
+      bodyType: suiteBodyType,
+      ageRange: suiteAgeRange,
+      hairStyle: suiteHairStyle,
+      hairColor: suiteHairColor,
+      modelAppearance: suiteModelAppearance,
+      ...(suiteModelAppearance === "custom" ? { modelAppearanceCustom: suiteModelAppearanceCustom } : {}),
+      skinTone: suiteSkinTone,
+      backgroundMode: suiteBackgroundMode,
+      productName: suiteProductName,
+      sellingPoints: suiteSellingPoints,
+    };
+  }
+
+  function selectSuitePromptSet(id: string) {
+    setSuitePromptSetId(id);
+    setSuitePromptDrafts({});
+    setSuitePromptDraftSetId("");
+    setSuitePromptDraftDirty(false);
+    const selected = suitePromptSets.find((promptSet) => promptSet.id === id);
+    if (selected?.requiresCustomBackground) setSuiteBackgroundMode("custom");
+  }
+
+  async function openSuitePromptEditor() {
+    try {
+      const preview = await previewProductSuitePrompts(suitePromptSetId, suitePromptPreviewInput());
+      setSuitePromptDrafts(preview.prompts);
+      setSuitePromptDraftSetId(suitePromptSetId);
+      setSuitePromptDraftDirty(false);
+      setSuitePromptEditorOpen(true);
+    } catch (error) {
+      setSuiteError(error instanceof Error ? error.message : "提示词预览失败。");
+    }
+  }
+
+  async function startNewSuitePromptSet() {
+    try {
+      const prompts = suitePromptDraftSetId === suitePromptSetId && suitePromptDraftDirty
+        ? suitePromptDrafts
+        : (await previewProductSuitePrompts(suitePromptSetId, suitePromptPreviewInput())).prompts;
+      const selected = suitePromptSets.find((promptSet) => promptSet.id === suitePromptSetId);
+      setSuitePromptSetEditId("");
+      setSuitePromptSetName("");
+      setSuitePromptSetDrafts(prompts);
+      setSuitePromptSetRequiresBackground(Boolean(selected?.requiresCustomBackground));
+      setSuitePromptSetError("");
+      setSuitePromptManagerOpen(true);
+    } catch (error) {
+      setSuitePromptSetError(error instanceof Error ? error.message : "无法载入提示词预览。");
+    }
+  }
+
+  function editSuitePromptSet(promptSet: ProductSuitePromptSet) {
+    setSuitePromptSetEditId(promptSet.id);
+    setSuitePromptSetName(promptSet.name);
+    setSuitePromptSetDrafts({ ...promptSet.prompts });
+    setSuitePromptSetRequiresBackground(promptSet.requiresCustomBackground);
+    setSuitePromptSetError("");
+  }
+
+  async function saveSuitePromptSet() {
+    const prompts = Object.fromEntries(productSuiteSlots.map(({ slot }) => [slot, String(suitePromptSetDrafts[slot] || "").trim()])) as Record<ProductSuiteSlot, string>;
+    if (!suitePromptSetName.trim()) { setSuitePromptSetError("请填写提示词版本名称。"); return; }
+    if (productSuiteSlots.some(({ slot }) => !prompts[slot])) { setSuitePromptSetError("请补全正面、角度、背面和 3D 四个画面的提示词。"); return; }
+    setSuitePromptSetSaving(true);
+    setSuitePromptSetError("");
+    try {
+      const input = { name: suitePromptSetName.trim(), prompts, requiresCustomBackground: suitePromptSetRequiresBackground };
+      const updated = suitePromptSetEditId ? await updateProductSuitePromptSet(suitePromptSetEditId, input) : await createProductSuitePromptSet(input);
+      setSuitePromptSets((current) => [updated, ...current.filter((promptSet) => promptSet.id !== updated.id)]);
+      setSuitePromptSetEditId(updated.id);
+      setSuitePromptSetName(updated.name);
+      setSuitePromptSetDrafts({ ...updated.prompts });
+      setSuitePromptSetRequiresBackground(updated.requiresCustomBackground);
+      setSuitePromptSetError("已保存。团队成员都可以使用此版本。");
+    } catch (error) {
+      setSuitePromptSetError(error instanceof Error ? error.message : "保存提示词版本失败。");
+    } finally {
+      setSuitePromptSetSaving(false);
+    }
+  }
+
+  async function removeSuitePromptSet(promptSet: ProductSuitePromptSet) {
+    if (!window.confirm(`确定删除提示词版本“${promptSet.name}”吗？已有套图任务不受影响。`)) return;
+    try {
+      await deleteProductSuitePromptSet(promptSet.id);
+      setSuitePromptSets((current) => current.filter((item) => item.id !== promptSet.id));
+      if (suitePromptSetId === promptSet.id) selectSuitePromptSet("system-default");
+      if (suitePromptSetEditId === promptSet.id) {
+        setSuitePromptSetEditId("");
+        setSuitePromptSetName("");
+        setSuitePromptSetDrafts({});
+      }
+    } catch (error) {
+      setSuitePromptSetError(error instanceof Error ? error.message : "删除提示词版本失败。");
+    }
+  }
+
   async function submitProductSuite() {
     if (!suiteImages.length) { setSuiteError("请先上传商品图片。"); return; }
     if (suiteBackgroundMode === "custom" && !suiteBackground) { setSuiteError("请选择一张自定义背景图片。"); return; }
     setSuiteSubmitting(true);
     setSuiteError("");
     try {
+      const prompts = suitePromptDraftSetId === suitePromptSetId && suitePromptDraftDirty
+        ? suitePromptDrafts
+        : (await previewProductSuitePrompts(suitePromptSetId, suitePromptPreviewInput())).prompts;
       const suite = await createProductSuite({
         images: suiteImages,
         ...(suiteBackgroundMode === "custom" && suiteBackground ? { backgroundImages: [suiteBackground] } : {}),
@@ -578,7 +707,8 @@ function App() {
         backgroundMode: suiteBackgroundMode,
         productName: suiteProductName,
         sellingPoints: suiteSellingPoints,
-        prompts: {},
+        promptSetId: suitePromptSetId,
+        prompts,
       });
       setProductSuites((current) => [suite, ...current.filter((item) => item.id !== suite.id)]);
       window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
@@ -1125,6 +1255,7 @@ function App() {
   }
 
   function renderProductSuitePanel() {
+    const selectedPromptSet = suitePromptSets.find((promptSet) => promptSet.id === suitePromptSetId);
     return (
       <section className="panel product-suite-panel">
         <div className="batch-heading">
@@ -1132,50 +1263,100 @@ function App() {
           <span className="suite-spec-badge">4:5 · 2K · 4 张</span>
         </div>
         <div className="product-suite-form-grid">
-          <div className="suite-upload-stack">
-            <div className="dropzone suite-upload-zone">
-              {suiteImages.length ? <div className="suite-source-gallery">{suiteImages.map((image, index) => <div className="suite-source-tile" key={image.id}><img className="suite-source-preview" src={image.dataUrl} alt={`商品参考图 ${index + 1}`} /><span>{index + 1}</span><small>{formatBytes(image.size || 0)}</small><button className="suite-source-remove" type="button" aria-label={`移除商品参考图 ${index + 1}`} onClick={() => setSuiteImages((current) => current.filter((candidate) => candidate.id !== image.id))}><X size={14} /></button></div>)}</div> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>支持 JPG、PNG、WebP；文件需小于 10MB，超限会自动压缩</span></>}
-              <div className="suite-upload-actions"><button className="secondary" type="button" disabled={suiteImages.length >= MAX_PRODUCT_SUITE_IMAGES} onClick={() => suiteImageInputRef.current?.click()}>{suiteImages.length ? "添加商品图" : "选择商品图"}</button>{suiteImages.length > 0 && <button className="ghost" type="button" onClick={() => setSuiteImages([])}><Trash2 size={16} />清空</button>}</div>
-              <span className="suite-upload-count">已选择 {suiteImages.length} / {MAX_PRODUCT_SUITE_IMAGES} 张；首张用于自动抠图，其余图片用于补充商品细节参考。文件大小按压缩后的实际字节数计算。</span>
-              <input ref={suiteImageInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void addSuiteImages(event.currentTarget.files || []).finally(() => { event.currentTarget.value = ""; }); }} />
-            </div>
-            <div className="suite-background-card">
-              <div className="suite-section-heading"><strong>统一背景</strong><span>默认浅灰偏白色无缝摄影棚背景，也可上传自定义背景</span></div>
-              <div className="background-choice" role="radiogroup" aria-label="套图统一背景">
-                <button type="button" className={suiteBackgroundMode === "white" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("white")}><span className="white-preview" />浅灰偏白背景</button>
-                <button type="button" className={suiteBackgroundMode === "custom" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("custom")}><span className="checker-preview" />自定义背景</button>
+          <section className="suite-form-section suite-assets-section" aria-labelledby="suite-assets-heading">
+            <div className="suite-form-section-heading"><span>01</span><div><h3 id="suite-assets-heading">商品素材</h3><p>先上传商品图，再确认统一背景。</p></div></div>
+            <div className="suite-upload-stack">
+              <div className="dropzone suite-upload-zone">
+                {suiteImages.length ? <div className="suite-source-gallery">{suiteImages.map((image, index) => <div className="suite-source-tile" key={image.id}><img className="suite-source-preview" src={image.dataUrl} alt={`商品参考图 ${index + 1}`} /><span>{index + 1}</span><small>{formatBytes(image.size || 0)}</small><button className="suite-source-remove" type="button" aria-label={`移除商品参考图 ${index + 1}`} onClick={() => setSuiteImages((current) => current.filter((candidate) => candidate.id !== image.id))}><X size={14} /></button></div>)}</div> : <><ImagePlus size={30} /><strong>上传商品原图</strong><span>支持 JPG、PNG、WebP；文件需小于 10MB，超限会自动压缩</span></>}
+                <div className="suite-upload-actions"><button className="secondary" type="button" disabled={suiteImages.length >= MAX_PRODUCT_SUITE_IMAGES} onClick={() => suiteImageInputRef.current?.click()}>{suiteImages.length ? "添加商品图" : "选择商品图"}</button>{suiteImages.length > 0 && <button className="ghost" type="button" onClick={() => setSuiteImages([])}><Trash2 size={16} />清空</button>}</div>
+                <span className="suite-upload-count">已选择 {suiteImages.length} / {MAX_PRODUCT_SUITE_IMAGES} 张；首张用于自动抠图，其余图片用于补充商品细节参考。文件大小按压缩后的实际字节数计算。</span>
+                <input ref={suiteImageInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { void addSuiteImages(event.currentTarget.files || []).finally(() => { event.currentTarget.value = ""; }); }} />
               </div>
-              {suiteBackground && <div className="suite-background-preview"><img src={suiteBackground.dataUrl} alt="自定义背景" /><button className="ghost" type="button" onClick={() => setSuiteBackground(null)}>移除背景</button></div>}
-              <button className="secondary" type="button" onClick={() => suiteBackgroundInputRef.current?.click()}>{suiteBackground ? "替换背景图" : "上传背景图"}</button>
-              <input ref={suiteBackgroundInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteBackground).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+              <div className="suite-background-card">
+                <div className="suite-section-heading"><strong>统一背景</strong><span>默认浅灰偏白色无缝摄影棚背景，也可上传自定义背景</span></div>
+                <div className="background-choice" role="radiogroup" aria-label="套图统一背景">
+                  <button type="button" className={suiteBackgroundMode === "white" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("white")}><span className="white-preview" />浅灰偏白背景</button>
+                  <button type="button" className={suiteBackgroundMode === "custom" ? "selected" : ""} onClick={() => setSuiteBackgroundMode("custom")}><span className="checker-preview" />自定义背景</button>
+                </div>
+                {suiteBackground && <div className="suite-background-preview"><img src={suiteBackground.dataUrl} alt="自定义背景" /><button className="ghost" type="button" onClick={() => setSuiteBackground(null)}>移除背景</button></div>}
+                <button className="secondary" type="button" onClick={() => suiteBackgroundInputRef.current?.click()}>{suiteBackground ? "替换背景图" : "上传背景图"}</button>
+                <input ref={suiteBackgroundInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteBackground).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+              </div>
             </div>
-            <div className="suite-model-reference-card">
-              <div className="suite-section-heading"><strong>模特参考图（可选）</strong><span>{suiteModelReference ? "已锁定人物外观" : "用于统一正面、侧面和背面人物"}</span></div>
-              {suiteModelReference ? <div className="suite-model-reference-preview"><img src={suiteModelReference.dataUrl} alt="模特参考图" /><div><strong>{suiteModelReference.fileName}</strong><span>将由 Sol 分析可见人物特征，且不会作为服装来源。</span></div><button className="ghost" type="button" onClick={() => setSuiteModelReference(null)}><Trash2 size={16} />移除</button></div> : <div className="suite-model-reference-empty"><UploadCloud size={22} /><span>上传一张模特参考图，自动分析脸型、发型、肤色和身材比例</span></div>}
-              <button className="secondary" type="button" onClick={() => suiteModelReferenceInputRef.current?.click()}>{suiteModelReference ? "替换模特参考图" : "上传模特参考图"}</button>
-              <input ref={suiteModelReferenceInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteModelReference).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
-            </div>
-          </div>
+          </section>
           <div className="suite-options-column">
-            <div className="suite-option-grid">
-              <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as ProductSuiteModel)}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option><option value="image2">Image 2</option><option value="image2.5-sunburst">GPT Image 2.5 Sunburst</option></select></label>
-              <label className="field"><span>模特性别</span><select disabled={Boolean(suiteModelReference)} value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="field"><span>模特体型</span><select disabled={Boolean(suiteModelReference)} value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="field"><span>模特年龄</span><select disabled={Boolean(suiteModelReference)} value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="field"><span>模特发型</span><select disabled={Boolean(suiteModelReference)} value={suiteHairStyle} onChange={(event) => setSuiteHairStyle(event.target.value as ProductSuiteHairStyle)}>{Object.entries(productSuiteHairLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="field"><span>模特发色</span><select disabled={Boolean(suiteModelReference)} value={suiteHairColor} onChange={(event) => setSuiteHairColor(event.target.value as ProductSuiteHairColor)}>{Object.entries(productSuiteHairColorLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              <label className="field"><span>模特外观 / Model appearance</span><select disabled={Boolean(suiteModelReference)} value={suiteModelAppearance} onChange={(event) => setSuiteModelAppearance(event.target.value as ProductSuiteModelAppearance)}>{Object.entries(productSuiteAppearanceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-              {suiteModelAppearance === "custom" && <label className="field"><span>自定义模特外观</span><input disabled={Boolean(suiteModelReference)} maxLength={120} value={suiteModelAppearanceCustom} onChange={(event) => setSuiteModelAppearanceCustom(event.target.value)} placeholder="例如：Afro-Latina with natural curly hair" /></label>}
-              <label className="field"><span>模特肤色</span><select disabled={Boolean(suiteModelReference)} value={suiteSkinTone} onChange={(event) => setSuiteSkinTone(event.target.value as ProductSuiteSkinTone)}>{Object.entries(productSuiteSkinLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            </div>
-            {!suiteModelReference && <div className="suite-reference-lock-note">用于引导生成模特外观，不代表用户身份；肤色可单独调整。上传模特参考图后，以参考图和 Sol 分析结果为准。</div>}
-            {suiteModelReference && <div className="suite-reference-lock-note">已上传模特参考图，上传参考图后以参考图为准；七项外观选项仅作记录并已禁用，生成时以参考图和 Sol 分析结果为准。</div>}
-            <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
-            <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
+            <section className="suite-form-section suite-model-section" aria-labelledby="suite-model-heading">
+              <div className="suite-form-section-heading"><span>02</span><div><h3 id="suite-model-heading">模特与生成设置</h3><p>选择模型和基础模特条件，可展开调整外观细节。</p></div></div>
+              <details className="suite-optional-details suite-model-reference-details">
+                <summary>模特参考图（可选）<span>{suiteModelReference ? "已上传 · 用于统一三视图人物" : "上传后统一三视图人物"}</span></summary>
+                <div className="suite-model-reference-card">
+                  <div className="suite-section-heading"><strong>模特参考图</strong><span>{suiteModelReference ? "已锁定人物外观" : "不作为服装来源"}</span></div>
+                  {suiteModelReference ? <div className="suite-model-reference-preview"><img src={suiteModelReference.dataUrl} alt="模特参考图" /><div><strong>{suiteModelReference.fileName}</strong><span>将由 Sol 分析可见人物特征，且不会作为服装来源。</span></div><button className="ghost" type="button" onClick={() => setSuiteModelReference(null)}><Trash2 size={16} />移除</button></div> : <div className="suite-model-reference-empty"><UploadCloud size={22} /><span>上传一张模特参考图，自动分析脸型、发型、肤色和身材比例</span></div>}
+                  <button className="secondary" type="button" onClick={() => suiteModelReferenceInputRef.current?.click()}>{suiteModelReference ? "替换模特参考图" : "上传模特参考图"}</button>
+                  <input ref={suiteModelReferenceInputRef} type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void readSuiteFile(file).then(setSuiteModelReference).catch((error) => setSuiteError(error.message)); event.currentTarget.value = ""; }} />
+                </div>
+              </details>
+              <div className="suite-option-grid">
+                <label className="field"><span>生成模型</span><select value={suiteModel} onChange={(event) => setSuiteModel(event.target.value as ProductSuiteModel)}><option value="kling">Kling Image O3 Edit</option><option value="nanobanana">Nano Banana Pro</option><option value="image2">Image 2</option><option value="image2.5-sunburst">GPT Image 2.5 Sunburst</option></select></label>
+                <label className="field"><span>模特性别</span><select disabled={Boolean(suiteModelReference)} value={suiteGender} onChange={(event) => setSuiteGender(event.target.value as ProductSuiteGender)}>{Object.entries(productSuiteGenderLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="field"><span>模特体型</span><select disabled={Boolean(suiteModelReference)} value={suiteBodyType} onChange={(event) => setSuiteBodyType(event.target.value as ProductSuiteBodyType)}>{Object.entries(productSuiteBodyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="field"><span>模特肤色</span><select disabled={Boolean(suiteModelReference)} value={suiteSkinTone} onChange={(event) => setSuiteSkinTone(event.target.value as ProductSuiteSkinTone)}>{Object.entries(productSuiteSkinLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              </div>
+              {!suiteModelReference && <div className="suite-reference-lock-note">这些选项只用于引导模特外观，不代表用户身份；肤色可单独调整。</div>}
+              {suiteModelReference && <div className="suite-reference-lock-note">已上传模特参考图，生成时以参考图和 Sol 分析结果为准；模特选项暂不参与生成。</div>}
+              <details className="suite-optional-details suite-advanced-model-details">
+                <summary>更多模特外观设置<span>年龄、发型、发色与外观描述</span></summary>
+                <div className="suite-option-grid suite-option-grid-advanced">
+                  <label className="field"><span>模特年龄</span><select disabled={Boolean(suiteModelReference)} value={suiteAgeRange} onChange={(event) => setSuiteAgeRange(event.target.value as ProductSuiteAgeRange)}>{Object.entries(productSuiteAgeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label className="field"><span>模特发型</span><select disabled={Boolean(suiteModelReference)} value={suiteHairStyle} onChange={(event) => setSuiteHairStyle(event.target.value as ProductSuiteHairStyle)}>{Object.entries(productSuiteHairLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label className="field"><span>模特发色</span><select disabled={Boolean(suiteModelReference)} value={suiteHairColor} onChange={(event) => setSuiteHairColor(event.target.value as ProductSuiteHairColor)}>{Object.entries(productSuiteHairColorLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label className="field"><span>模特外观 / Model appearance</span><select disabled={Boolean(suiteModelReference)} value={suiteModelAppearance} onChange={(event) => setSuiteModelAppearance(event.target.value as ProductSuiteModelAppearance)}>{Object.entries(productSuiteAppearanceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  {suiteModelAppearance === "custom" && <label className="field"><span>自定义模特外观</span><input disabled={Boolean(suiteModelReference)} maxLength={120} value={suiteModelAppearanceCustom} onChange={(event) => setSuiteModelAppearanceCustom(event.target.value)} placeholder="例如：Afro-Latina with natural curly hair" /></label>}
+                </div>
+              </details>
+              <div className="suite-product-info-grid">
+                <label className="field"><span>商品名称</span><input value={suiteProductName} onChange={(event) => setSuiteProductName(event.target.value)} placeholder="例如：羊绒针织开衫" /></label>
+                <label className="field"><span>商品卖点 / 材质 / 功能</span><textarea value={suiteSellingPoints} onChange={(event) => setSuiteSellingPoints(event.target.value)} placeholder="例如：柔软羊绒混纺，宽松版型，适合秋冬通勤" rows={3} /></label>
+              </div>
+            </section>
+            <section className="suite-form-section suite-prompt-section" aria-labelledby="suite-prompt-heading">
+              <div className="suite-form-section-heading"><span>03</span><div><h3 id="suite-prompt-heading">提示词版本</h3><p>选用团队版本；单次修改不会覆盖已保存版本。</p></div></div>
+              <div className="suite-prompt-version-card">
+              <div className="suite-prompt-version-controls">
+                <label className="field"><span>提示词版本</span><select value={suitePromptSetId} onChange={(event) => selectSuitePromptSet(event.target.value)}><option value="system-default">系统默认（现有套图文案）</option>{suitePromptSets.map((promptSet) => <option key={promptSet.id} value={promptSet.id}>{promptSet.name}{promptSet.ownerUsername ? ` · ${promptSet.ownerUsername}` : ""}</option>)}</select></label>
+                <button className="secondary" type="button" onClick={() => void openSuitePromptEditor()}>编辑本次提示词</button>
+                <button className="secondary" type="button" onClick={() => void startNewSuitePromptSet()}><Save size={16} />管理 / 保存版本</button>
+              </div>
+              <span className="suite-prompt-version-note">{selectedPromptSet?.requiresCustomBackground ? "此版本要求使用上传的灰黑纹理背景；任务创建前必须上传。" : "版本可供团队成员使用；对本次提示词的修改不会自动改写已保存版本。"}</span>
+              {selectedPromptSet?.requiresCustomBackground && (!suiteBackground || suiteBackgroundMode !== "custom") && <div className="suite-prompt-background-warning">请在左侧选择“自定义背景”并上传灰黑纹理背景图后再生成。</div>}
+              {suitePromptEditorOpen && <div className="suite-prompt-editor">
+                <div className="suite-section-heading"><strong>本次任务提示词</strong><span>只影响本次任务；要长期复用，请另存为版本。</span></div>
+                {productSuiteSlots.map(({ slot, label, eyebrow }) => <label className="field" key={slot}><span>{eyebrow} · {label}</span><textarea rows={5} value={suitePromptDrafts[slot] || ""} onChange={(event) => { setSuitePromptDrafts((current) => ({ ...current, [slot]: event.target.value })); setSuitePromptDraftSetId(suitePromptSetId); setSuitePromptDraftDirty(true); }} /></label>)}
+                <button className="ghost" type="button" onClick={() => void openSuitePromptEditor()}><RefreshCcw size={15} />重新载入所选版本预览</button>
+              </div>}
+              </div>
+            </section>
             <div className="suite-submit-row"><div><strong>自动抠图 + 4 张生成</strong><span>三视图共享同一位模特身份，失败后可单独重试。</span></div><button className="primary" type="button" disabled={suiteSubmitting} onClick={() => void submitProductSuite()}>{suiteSubmitting ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}{suiteSubmitting ? "提交中..." : "开始生成套图"}</button></div>
           </div>
         </div>
         {suiteError && <div className="error-box">{suiteError}</div>}
+        {suitePromptManagerOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setSuitePromptManagerOpen(false); setSuitePromptSetError(""); } }}>
+          <section className="prompt-set-dialog" role="dialog" aria-modal="true" aria-labelledby="suite-prompt-manager-title">
+            <header><div><p className="eyebrow">Prompt Library · Team shared</p><h2 id="suite-prompt-manager-title">套图提示词版本</h2><span>版本对团队成员开放；只有创建者和管理员可编辑或删除。</span></div><button className="icon-button" type="button" aria-label="关闭" onClick={() => { setSuitePromptManagerOpen(false); setSuitePromptSetError(""); }}><X size={18} /></button></header>
+            <div className="prompt-set-manager-layout">
+              <div className="prompt-set-list"><button className="secondary" type="button" onClick={() => void startNewSuitePromptSet()}><Plus size={16} />新建版本</button>{suitePromptSets.length === 0 ? <p className="muted">还没有已保存版本。</p> : suitePromptSets.map((promptSet) => <article className={`prompt-set-list-item ${suitePromptSetEditId === promptSet.id ? "selected" : ""}`} key={promptSet.id}><div><strong>{promptSet.name}</strong><small>创建者：{promptSet.ownerUsername}{promptSet.requiresCustomBackground ? " · 需要自定义背景" : ""}</small></div><div className="prompt-set-item-actions"><button className="ghost" type="button" onClick={() => { selectSuitePromptSet(promptSet.id); setSuitePromptManagerOpen(false); }}>使用</button>{promptSet.canEdit && <button className="ghost" type="button" onClick={() => editSuitePromptSet(promptSet)} title="编辑"><Pencil size={15} /></button>}{promptSet.canDelete && <button className="icon-danger" type="button" onClick={() => void removeSuitePromptSet(promptSet)} title="删除"><Trash2 size={15} /></button>}</div></article>)}</div>
+              <div className="prompt-set-editor">
+                <h3>{suitePromptSetEditId ? "编辑版本" : "新建团队版本"}</h3>
+                <label className="field"><span>版本名称</span><input maxLength={60} value={suitePromptSetName} onChange={(event) => setSuitePromptSetName(event.target.value)} placeholder="例如：春季商品详情图" /></label>
+                <label className="prompt-set-background-toggle"><input type="checkbox" checked={suitePromptSetRequiresBackground} onChange={(event) => setSuitePromptSetRequiresBackground(event.target.checked)} /><span>生成时必须上传自定义背景（如灰黑纹理背景）</span></label>
+                <p className="prompt-token-help">可选变量：<code>{"{{productName}}"}</code>、<code>{"{{sellingPoints}}"}</code>、<code>{"{{modelProfile}}"}</code>、<code>{"{{backgroundDescription}}"}</code>、<code>{"{{modelIdentity}}"}</code>，以及模特配置字段。</p>
+                {productSuiteSlots.map(({ slot, label, eyebrow }) => <label className="field" key={slot}><span>{eyebrow} · {label}</span><textarea rows={4} value={suitePromptSetDrafts[slot] || ""} onChange={(event) => setSuitePromptSetDrafts((current) => ({ ...current, [slot]: event.target.value }))} /></label>)}
+                {suitePromptSetError && <div className={suitePromptSetError.startsWith("已保存") ? "success-box" : "error-box"}>{suitePromptSetError}</div>}
+                <footer><button className="secondary" type="button" onClick={() => { setSuitePromptManagerOpen(false); setSuitePromptSetError(""); }}>关闭</button><button className="primary" type="button" disabled={suitePromptSetSaving} onClick={() => void saveSuitePromptSet()}>{suitePromptSetSaving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}{suitePromptSetSaving ? "保存中..." : "保存版本"}</button></footer>
+              </div>
+            </div>
+          </section>
+        </div>}
       </section>
     );
   }
@@ -1198,8 +1379,8 @@ function App() {
 
   return (
     <main className={`app-shell creation-${creationKind}`}>
-      <header className={`workbench-topbar ${creationKind !== "suite" ? "image-workbench-topbar" : ""}`}>
-        {creationKind !== "suite" && <div className="image-workbench-brand"><span className="image-workbench-brand-mark"><ImagePlus size={14} /></span><strong>Batch Desk</strong></div>}
+      <header className="workbench-topbar image-workbench-topbar">
+        <div className="image-workbench-brand"><span className="image-workbench-brand-mark"><ImagePlus size={14} /></span><strong>Batch Desk</strong></div>
         <nav className="workbench-nav" aria-label="创作类型">
           <button className={creationKind === "image" ? "active" : ""} aria-pressed={creationKind === "image"} onClick={() => setCreationKind("image")} type="button">图片创作</button>
           <button className={creationKind === "video" ? "active" : ""} aria-pressed={creationKind === "video"} onClick={() => setCreationKind("video")} type="button">视频创作</button>

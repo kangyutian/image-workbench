@@ -30,11 +30,13 @@ import { UsageSynchronizer } from "./server/usageSynchronizer.mjs";
 import { normalizeUsageRange, summarizeUsage } from "./server/usageStats.mjs";
 import { usageResponse } from "./server/usageApi.mjs";
 import { mergePredictionIds, mergeResultUrls, predictionIdsFromResponse, reconcileRecoveryResults, recoveryPredictionIds } from "./server/predictionResults.mjs";
-import { PRODUCT_SUITE_MAX_PRODUCT_IMAGES, PRODUCT_SUITE_MODELS, PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteImageModel, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
+import { PRODUCT_SUITE_MAX_PRODUCT_IMAGES, PRODUCT_SUITE_MODELS, PRODUCT_SUITE_SLOTS, buildProductSuitePrompts, normalizeProductSuiteInput, productSuiteGenerationPlan, productSuiteGenerationPrompt, productSuiteImageModel, productSuiteModelProfilePrompt, productSuiteReferenceImages, validateProductSuiteInput } from "./server/productSuiteModels.mjs";
 import { analyzeModelReferenceImage } from "./server/modelReferenceAnalysis.mjs";
 import { composeSubjectOnFixedBackground, imageBufferDataUrl, prepareComposedImageForUpload } from "./server/imageComposition.mjs";
 import { canRecoverProductSuiteBackground, cutoutResultUrlForSuite } from "./server/productSuiteRecovery.mjs";
 import { ProductSuiteStore } from "./server/productSuiteStore.mjs";
+import { ProductSuitePromptSetStore } from "./server/productSuitePromptSetStore.mjs";
+import { canManageProductSuitePromptSet, MAX_PRODUCT_SUITE_PROMPT_LENGTH, productSuitePromptSetView, resolveProductSuitePromptSelection, SYSTEM_PRODUCT_SUITE_PROMPT_SET_ID } from "./server/productSuitePromptSets.mjs";
 import { createZipArchive } from "./server/productSuiteArchive.mjs";
 import { fetchWithRetry, isTransientFetchError } from "./server/wavespeedTransport.mjs";
 import { aspectRatiosFor } from "./server/imageAspectRatios.mjs";
@@ -64,6 +66,7 @@ const mcpUploadsFile = resolve("data", "mcp-uploads.json");
 const mcpIdempotencyFile = resolve("data", "mcp-idempotency.json");
 const usageLedgerFile = resolve("data", "usage-ledger.json");
 const productSuitesFile = resolve("data", "product-suites.json");
+const productSuitePromptSetsFile = resolve("data", "product-suite-prompt-sets.json");
 const videoRemixesFile = resolve("data", "video-remixes.json");
 const stagedImagesRoot = resolve("data", "staged-images");
 const mcpUploadsRoot = resolve("data", "mcp-uploads");
@@ -77,6 +80,7 @@ loadLocalEnv();
 const mcpConfig = mcpConfigFromEnv();
 const taskStore = new TaskStore({ file: tasksFile });
 const productSuiteStore = new ProductSuiteStore({ file: productSuitesFile });
+const productSuitePromptSetStore = new ProductSuitePromptSetStore({ file: productSuitePromptSetsFile });
 const videoRemixStore = new VideoRemixStore({ file: videoRemixesFile });
 const stagedUploadStore = new TaskStore({ file: stagedUploadsFile });
 const mcpUploadStore = new McpUploadStore({ file: mcpUploadsFile });
@@ -889,6 +893,26 @@ function suiteStatusForItems(items) {
   return "queued";
 }
 
+function productSuitePromptValues(normalized) {
+  const backgroundDescription = normalized.backgroundMode === "custom"
+    ? "使用用户上传的统一背景图，保持原有灰黑纹理与低调高级质感，并让整套图背景一致。"
+    : "使用浅灰偏白色无缝摄影棚背景。";
+  return {
+    productName: normalized.productName || "待识别商品",
+    sellingPoints: normalized.sellingPoints || "突出商品真实材质、结构和卖点",
+    gender: normalized.gender,
+    bodyType: normalized.bodyType,
+    ageRange: normalized.ageRange,
+    hairStyle: normalized.hairStyle,
+    hairColor: normalized.hairColor,
+    skinTone: normalized.skinTone,
+    modelAppearance: normalized.modelAppearance,
+    modelProfile: productSuiteModelProfilePrompt(normalized),
+    modelIdentity: "必须与正面图中的同一位成年模特保持一致，只改变视角，不更换人物。",
+    backgroundDescription,
+  };
+}
+
 function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore } = {}) {
   const ownerInfo = ownerIdentity(owner);
   const modelReferenceImage = input?.modelReferenceImage || null;
@@ -897,6 +921,14 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
   const backgroundImages = Array.isArray(input.backgroundImages) ? input.backgroundImages : [];
   const errors = validateProductSuiteInput({ ...normalized, backgroundImages, modelReferenceImage }, sourceImages);
   if (errors.length) throw Object.assign(new Error(errors[0]), { statusCode: 400 });
+  const defaultPrompts = buildProductSuitePrompts({ ...normalized, prompts: {} });
+  const promptSelection = resolveProductSuitePromptSelection({
+    store: productSuitePromptSetStore,
+    input: { ...input, backgroundImages },
+    defaultPrompts,
+    values: productSuitePromptValues(normalized),
+  });
+  const prompts = promptSelection.prompts;
   const id = taskId();
   const allImages = [...sourceImages, ...backgroundImages, ...(modelReferenceImage ? [modelReferenceImage] : [])];
   const uploadReferences = allImages.filter((image) => image?.stagedUploadId);
@@ -911,7 +943,6 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
   const locallyStaged = localImages.length ? stageImagesLocally(localImages, { taskId: id, root: stagedImagesRoot, maxBytes: maxImportedImageBytes }) : [];
   let localIndex = 0;
   const staged = allImages.map((image) => image?.stagedUploadId ? claimedByUploadId.get(image.stagedUploadId) : locallyStaged[localIndex++]);
-  const prompts = buildProductSuitePrompts(normalized);
   const { backgroundImages: _backgroundImages, ...suiteInput } = normalized;
   const backgroundIndex = sourceImages.length;
   const modelReferenceIndex = sourceImages.length + backgroundImages.length;
@@ -920,7 +951,7 @@ function createProductSuiteTask(input, owner, { uploadStore = stagedUploadStore 
     owner: ownerInfo.username,
     accountId: ownerInfo.accountId,
     status: "queued",
-    input: { ...suiteInput, prompts },
+    input: { ...suiteInput, promptSetId: promptSelection.promptSetId, promptSetName: promptSelection.promptSetName, promptSetRequiresCustomBackground: promptSelection.requiresCustomBackground, prompts },
     sourceImages: staged.slice(0, sourceImages.length),
     sourceImage: staged[0],
     backgroundImage: backgroundImages.length ? staged[backgroundIndex] || null : null,
@@ -973,10 +1004,12 @@ async function analyzeSuiteModelReference(suite) {
     const imageUrl = imageDataUrlForModelReference(currentSuite.modelReferenceImage);
     const { analysis, usage } = await analyzeModelReferenceImage(imageUrl);
     const updatedSuite = productSuiteStore.get(currentSuite.id);
-    const analyzedInput = { ...updatedSuite.input, hasModelReference: true, modelReferenceAnalysis: analysis, prompts: {} };
-    const analyzedPrompts = buildProductSuitePrompts(analyzedInput);
+    const usesSystemPromptSet = !updatedSuite.input.promptSetId || updatedSuite.input.promptSetId === SYSTEM_PRODUCT_SUITE_PROMPT_SET_ID;
+    const analyzedInput = { ...updatedSuite.input, hasModelReference: true, modelReferenceAnalysis: analysis, prompts: usesSystemPromptSet ? {} : updatedSuite.input.prompts };
+    const analyzedPrompts = usesSystemPromptSet ? buildProductSuitePrompts(analyzedInput) : updatedSuite.input.prompts;
     const items = updatedSuite.items.map((item) => {
       if (!PRODUCT_SUITE_SLOTS.some((slot) => slot.slot === item.slot) || item.slot === "product-3d") return item;
+      if (!usesSystemPromptSet) return item;
       const wasDefault = item.prompt === item.defaultPrompt;
       return { ...item, prompt: wasDefault ? analyzedPrompts[item.slot] : item.prompt, defaultPrompt: analyzedPrompts[item.slot] };
     });
@@ -2074,6 +2107,66 @@ async function handleProductSuiteCreate(req, res, owner) {
   }
 }
 
+function handleProductSuitePromptSetList(res, actor) {
+  const promptSets = productSuitePromptSetStore.list()
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    .map((promptSet) => productSuitePromptSetView(promptSet, actor));
+  sendJson(res, 200, { promptSets });
+}
+
+async function handleProductSuitePromptSetCreate(req, res, actor) {
+  try {
+    const body = await readJsonBody(req);
+    const promptSet = productSuitePromptSetStore.create(body, ownerIdentity(actor));
+    sendJson(res, 201, { promptSet: productSuitePromptSetView(promptSet, actor) });
+  } catch (error) {
+    const statusCode = /同名/.test(error instanceof Error ? error.message : "") ? 409 : Number(error?.statusCode || 400);
+    sendJson(res, statusCode, { message: error instanceof Error ? error.message : "无法保存提示词版本。" });
+  }
+}
+
+async function handleProductSuitePromptSetUpdate(req, res, actor) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suite-prompt-sets\/([^/?]+)$/)?.[1] || "");
+  const current = productSuitePromptSetStore.get(id);
+  if (!current) return sendJson(res, 404, { message: "提示词版本不存在。" });
+  if (!canManageProductSuitePromptSet(current, actor)) return sendJson(res, 403, { message: "只能修改自己创建的提示词版本；管理员可以管理所有版本。" });
+  try {
+    const changes = await readJsonBody(req);
+    const promptSet = productSuitePromptSetStore.update(id, changes);
+    sendJson(res, 200, { promptSet: productSuitePromptSetView(promptSet, actor) });
+  } catch (error) {
+    const statusCode = /同名/.test(error instanceof Error ? error.message : "") ? 409 : Number(error?.statusCode || 400);
+    sendJson(res, statusCode, { message: error instanceof Error ? error.message : "无法更新提示词版本。" });
+  }
+}
+
+function handleProductSuitePromptSetDelete(req, res, actor) {
+  const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suite-prompt-sets\/([^/?]+)$/)?.[1] || "");
+  const current = productSuitePromptSetStore.get(id);
+  if (!current) return sendJson(res, 404, { message: "提示词版本不存在。" });
+  if (!canManageProductSuitePromptSet(current, actor)) return sendJson(res, 403, { message: "只能删除自己创建的提示词版本；管理员可以管理所有版本。" });
+  productSuitePromptSetStore.remove(id);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleProductSuitePromptPreview(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const input = body?.input && typeof body.input === "object" ? body.input : {};
+    const normalized = normalizeProductSuiteInput({ ...input, prompts: {} });
+    const selection = resolveProductSuitePromptSelection({
+      store: productSuitePromptSetStore,
+      input: { ...input, promptSetId: body?.promptSetId || input.promptSetId, prompts: {} },
+      defaultPrompts: buildProductSuitePrompts({ ...normalized, prompts: {} }),
+      values: productSuitePromptValues(normalized),
+      enforceBackground: false,
+    });
+    sendJson(res, 200, { ...selection });
+  } catch (error) {
+    sendJson(res, Number(error?.statusCode || 400), { message: error instanceof Error ? error.message : "无法预览提示词。" });
+  }
+}
+
 async function handleProductSuiteRecoverBackground(req, res, owner) {
   const id = decodeURIComponent(req.url.match(/^\/workbench\/product-suites\/([^/?]+)\/recover-background$/)?.[1] || "");
   const suite = productSuiteStore.get(id);
@@ -2126,7 +2219,7 @@ async function handleProductSuitePatch(req, res, owner) {
     const body = await readJsonBody(req);
     const prompts = body?.prompts && typeof body.prompts === "object" ? body.prompts : {};
     const allowed = new Set(PRODUCT_SUITE_SLOTS.map((slot) => slot.slot));
-    const items = suite.items.map((item) => allowed.has(item.slot) && typeof prompts[item.slot] === "string" ? { ...item, prompt: prompts[item.slot].trim().slice(0, 4000) } : item);
+    const items = suite.items.map((item) => allowed.has(item.slot) && typeof prompts[item.slot] === "string" ? { ...item, prompt: prompts[item.slot].trim().slice(0, MAX_PRODUCT_SUITE_PROMPT_LENGTH) } : item);
     const updated = productSuiteStore.patch(id, { items, input: { ...suite.input, prompts: Object.fromEntries(items.map((item) => [item.slot, item.prompt])) } });
     sendJson(res, 200, { suite: publicSuiteResult(updated) });
   } catch (error) {
@@ -2377,6 +2470,36 @@ const httpServer = createServer((req, res) => {
   if (req.url === "/workbench/tasks" && req.method === "GET") {
     const user = requireUser(req, res);
     if (user) handleTasksList(res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/product-suite-prompt-sets" && req.method === "GET") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuitePromptSetList(res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/product-suite-prompt-sets" && req.method === "POST") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuitePromptSetCreate(req, res, user);
+    return;
+  }
+
+  if (req.url === "/workbench/product-suite-prompt-sets/preview" && req.method === "POST") {
+    if (!requireUser(req, res)) return;
+    void handleProductSuitePromptPreview(req, res);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suite-prompt-sets\/[^/?]+$/) && req.method === "PATCH") {
+    const user = requireUser(req, res);
+    if (user) void handleProductSuitePromptSetUpdate(req, res, user);
+    return;
+  }
+
+  if (req.url?.match(/^\/workbench\/product-suite-prompt-sets\/[^/?]+$/) && req.method === "DELETE") {
+    const user = requireUser(req, res);
+    if (user) handleProductSuitePromptSetDelete(req, res, user);
     return;
   }
 
